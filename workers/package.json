@@ -1,0 +1,32 @@
+{
+  "name": "@claw-clinic/workers",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./src/index.ts"
+    },
+    "./doctor-agent": {
+      "import": "./dist/doctor-agent.js",
+      "types": "./src/doctor-agent.ts"
+    },
+    "./follow-up": {
+      "import": "./dist/follow-up.js",
+      "types": "./src/follow-up.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@claw-clinic/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "tsx": "^4.19.0"
+  }
+}
