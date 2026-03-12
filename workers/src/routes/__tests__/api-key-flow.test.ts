@@ -1,0 +1,194 @@
+import { describe, it, expect } from "vitest";
+import { app } from "../../server.js";
+
+// Helper to POST JSON to the app
+async function post(path: string, body: unknown) {
+  const res = await app.request(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return { status: res.status, json: (await res.json()) as Record<string, any> };
+}
+
+describe("API key diagnosis -> treatment end-to-end flow", () => {
+  describe("Missing API key flow (CFG.1.2)", () => {
+    it("diagnoses, walks through 3 treatment steps, and resolves", async () => {
+      // Step 1: Diagnose
+      const { status, json: diagRes } = await post("/diagnose", {
+        evidence: [{ type: "config", apiKey: { masked: "(empty)" } }],
+      });
+
+      expect(status).toBe(200);
+      expect(diagRes.diagnosis.icd_ai_code).toBe("CFG.1.2");
+      expect(diagRes.diagnosis.severity).toBe("Critical");
+      expect(diagRes.treatmentPlan).toHaveLength(3);
+
+      const sessionId = diagRes.sessionId;
+      const steps = diagRes.treatmentPlan;
+
+      expect(steps[0].id).toBe("step_1");
+      expect(steps[1].id).toBe("step_2");
+      expect(steps[2].id).toBe("step_3");
+
+      // Step 2: Execute step_1 (prompt user) -> expect "next" with step_2
+      const { json: treat1 } = await post("/treat", {
+        sessionId,
+        stepId: "step_1",
+        stepResult: { success: true },
+      });
+
+      expect(treat1.status).toBe("next");
+      expect(treat1.nextStep.id).toBe("step_2");
+
+      // Step 3: Execute step_2 (update config with user-provided key) -> expect "next" with step_3
+      const { json: treat2 } = await post("/treat", {
+        sessionId,
+        stepId: "step_2",
+        stepResult: {
+          success: true,
+          data: { userInput: "sk-ant-api03-newkey123" },
+        },
+      });
+
+      expect(treat2.status).toBe("next");
+      expect(treat2.nextStep.id).toBe("step_3");
+
+      // Step 4: Execute step_3 (verify connection) -> expect "resolved"
+      const { json: treat3 } = await post("/treat", {
+        sessionId,
+        stepId: "step_3",
+        stepResult: { success: true },
+      });
+
+      expect(treat3.status).toBe("resolved");
+    });
+  });
+
+  describe("API key format error flow (CFG.1.1)", () => {
+    it("diagnoses bad key format and walks through treatment to resolution", async () => {
+      // Diagnose: key with no recognized provider
+      const { status, json: diagRes } = await post("/diagnose", {
+        evidence: [{ type: "config", apiKey: { masked: "bad-key-..." } }],
+      });
+
+      expect(status).toBe(200);
+      expect(diagRes.diagnosis.icd_ai_code).toBe("CFG.1.1");
+      expect(diagRes.treatmentPlan).toHaveLength(3);
+
+      const sessionId = diagRes.sessionId;
+
+      // RX-CFG-001 has 3 steps: prompt_user, update_config, test_connection
+      // Step 1: prompt user for corrected key
+      const { json: treat1 } = await post("/treat", {
+        sessionId,
+        stepId: "step_1",
+        stepResult: { success: true },
+      });
+      expect(treat1.status).toBe("next");
+      expect(treat1.nextStep.id).toBe("step_2");
+
+      // Step 2: update config with corrected key
+      const { json: treat2 } = await post("/treat", {
+        sessionId,
+        stepId: "step_2",
+        stepResult: {
+          success: true,
+          data: { userInput: "sk-ant-api03-corrected" },
+        },
+      });
+      expect(treat2.status).toBe("next");
+      expect(treat2.nextStep.id).toBe("step_3");
+
+      // Step 3: verify connection
+      const { json: treat3 } = await post("/treat", {
+        sessionId,
+        stepId: "step_3",
+        stepResult: { success: true },
+      });
+      expect(treat3.status).toBe("resolved");
+    });
+  });
+
+  describe("Auth failure flow (CFG.3.1)", () => {
+    it("diagnoses auth failure and walks through 4 treatment steps to resolution", async () => {
+      // Diagnose: valid-looking key rejected by provider
+      const { status, json: diagRes } = await post("/diagnose", {
+        evidence: [
+          {
+            type: "config",
+            apiKey: { masked: "sk-ant-ab...wxyz", provider: "anthropic" },
+            errorLogs: ["Error: 401 Unauthorized"],
+          },
+        ],
+      });
+
+      expect(status).toBe(200);
+      expect(diagRes.diagnosis.icd_ai_code).toBe("CFG.3.1");
+      expect(diagRes.treatmentPlan).toHaveLength(4);
+
+      const sessionId = diagRes.sessionId;
+
+      // RX-CFG-004 has 4 steps: validate_config, prompt_user, update_config, test_connection
+      // Step 1: diagnose/inspect the rejection reason
+      const { json: treat1 } = await post("/treat", {
+        sessionId,
+        stepId: "step_1",
+        stepResult: { success: true },
+      });
+      expect(treat1.status).toBe("next");
+      expect(treat1.nextStep.id).toBe("step_2");
+
+      // Step 2: ask user to verify key in provider console
+      const { json: treat2 } = await post("/treat", {
+        sessionId,
+        stepId: "step_2",
+        stepResult: { success: true },
+      });
+      expect(treat2.status).toBe("next");
+      expect(treat2.nextStep.id).toBe("step_3");
+
+      // Step 3: update config with new key
+      const { json: treat3 } = await post("/treat", {
+        sessionId,
+        stepId: "step_3",
+        stepResult: {
+          success: true,
+          data: { userInput: "sk-ant-api03-freshkey" },
+        },
+      });
+      expect(treat3.status).toBe("next");
+      expect(treat3.nextStep.id).toBe("step_4");
+
+      // Step 4: verify connection with new key
+      const { json: treat4 } = await post("/treat", {
+        sessionId,
+        stepId: "step_4",
+        stepResult: { success: true },
+      });
+      expect(treat4.status).toBe("resolved");
+    });
+  });
+
+  describe("Treatment failure mid-flow", () => {
+    it("returns failed status when a treatment step fails", async () => {
+      // Diagnose with missing key
+      const { json: diagRes } = await post("/diagnose", {
+        evidence: [{ type: "config", apiKey: { masked: "(empty)" } }],
+      });
+
+      expect(diagRes.diagnosis.icd_ai_code).toBe("CFG.1.2");
+      const sessionId = diagRes.sessionId;
+
+      // Execute step_1 with failure
+      const { json: treatRes } = await post("/treat", {
+        sessionId,
+        stepId: "step_1",
+        stepResult: { success: false, error: "User declined to provide key" },
+      });
+
+      expect(treatRes.status).toBe("failed");
+      expect(treatRes.message).toContain("step_1");
+    });
+  });
+});

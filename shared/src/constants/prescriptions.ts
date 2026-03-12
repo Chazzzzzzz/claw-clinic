@@ -1509,4 +1509,257 @@ export const STANDARD_PRESCRIPTIONS: Prescription[] = [
     created_by: "system",
     created_at: "2026-03-09",
   },
+
+  // ─── RX-CFG-001: API Key Format Correction (CFG.1.1) ─────────
+  {
+    id: "RX-CFG-001",
+    name: "API Key Format Correction",
+    version: "1.0.0",
+    target_disease: "CFG.1.1",
+    target_frameworks: ["all"],
+    type: "acute",
+    risk_level: "medium",
+    auto_applicable: false,
+    steps: [
+      {
+        action: "instruction",
+        target: "user_interaction",
+        change:
+          "Ask the user to provide their API key. Validate that it matches the expected format for the provider (e.g., sk-ant-* for Anthropic, sk-* for OpenAI).",
+        rationale:
+          "API key format validation requires user input since the key is a credential that cannot be auto-generated.",
+        reversible: true,
+      },
+      {
+        action: "config_suggestion",
+        target: "api_key",
+        change:
+          "Update the API key in the configuration with the corrected value provided by the user.",
+        rationale:
+          "Once the user provides a correctly formatted key, it must be stored in the agent's configuration.",
+        reversible: true,
+      },
+      {
+        action: "instruction",
+        target: "verification",
+        change:
+          "Test the connection to the AI provider with the new key to verify it works.",
+        rationale:
+          "Verification ensures the corrected key is not only well-formed but also valid with the provider.",
+        reversible: true,
+      },
+    ],
+    dosage: {
+      parameters: {},
+      adjustments:
+        "If multiple providers are configured, validate the key format for each provider independently.",
+    },
+    side_effects: [
+      "User must share their API key, which is a sensitive credential",
+      "Incorrect key replacement could lock out access if the old key is overwritten",
+    ],
+    contraindications: [
+      "Environments where API keys are managed by a secrets manager and should not be modified directly",
+    ],
+    efficacy: {
+      success_rate: 0.95,
+      sample_size: 0,
+      last_updated: "2026-03-12",
+      confidence_interval: "N/A",
+    },
+    created_by: "system",
+    created_at: "2026-03-12",
+  },
+
+  // ─── RX-CFG-002: API Key Provisioning (CFG.1.2) ──────────────
+  {
+    id: "RX-CFG-002",
+    name: "API Key Provisioning",
+    version: "1.0.0",
+    target_disease: "CFG.1.2",
+    target_frameworks: ["all"],
+    type: "acute",
+    risk_level: "medium",
+    auto_applicable: false,
+    steps: [
+      {
+        action: "instruction",
+        target: "user_interaction",
+        change:
+          "The agent has no API key configured. Ask the user to provide an API key for their AI provider. Guide them to the provider's console (e.g., console.anthropic.com for Anthropic, platform.openai.com for OpenAI) if they need to create one.",
+        rationale:
+          "A missing key requires user action to provision. Providing direct links to provider consoles reduces friction.",
+        reversible: true,
+      },
+      {
+        action: "config_suggestion",
+        target: "api_key",
+        change:
+          "Set the API key in the configuration.",
+        rationale:
+          "The key must be persisted in the agent's configuration for ongoing use.",
+        reversible: true,
+      },
+      {
+        action: "instruction",
+        target: "verification",
+        change:
+          "Test the connection to verify the key is valid and has the necessary permissions.",
+        rationale:
+          "Verification after provisioning catches keys that are valid but lack required permissions or quota.",
+        reversible: true,
+      },
+    ],
+    dosage: {
+      parameters: {},
+      adjustments:
+        "For enterprise deployments, guide the user to their organization's API key management process rather than the public provider console.",
+    },
+    side_effects: [
+      "User must create an account and billing relationship with the AI provider if they do not have one",
+      "New API keys may have limited quota or require payment setup",
+    ],
+    contraindications: [
+      "Environments where API keys should be provisioned through infrastructure automation, not manual user input",
+    ],
+    efficacy: {
+      success_rate: 0.98,
+      sample_size: 0,
+      last_updated: "2026-03-12",
+      confidence_interval: "N/A",
+    },
+    created_by: "system",
+    created_at: "2026-03-12",
+  },
+
+  // ─── RX-CFG-003: Endpoint Repair (CFG.2.1) ───────────────────
+  {
+    id: "RX-CFG-003",
+    name: "Endpoint Repair",
+    version: "1.0.0",
+    target_disease: "CFG.2.1",
+    target_frameworks: ["all"],
+    type: "acute",
+    risk_level: "low",
+    auto_applicable: true,
+    steps: [
+      {
+        action: "instruction",
+        target: "config_inspection",
+        change:
+          "Inspect the configured API endpoint URL. Check for common issues: missing https://, trailing slashes, wrong port, wrong path.",
+        rationale:
+          "Most endpoint misconfigurations are simple formatting errors that can be detected by inspection.",
+        reversible: true,
+      },
+      {
+        action: "config_suggestion",
+        target: "endpoint_url",
+        change:
+          "Suggest the correct default endpoint for the detected provider (e.g., https://api.anthropic.com for Anthropic).",
+        rationale:
+          "Using the known default endpoint for the provider is the safest correction for most cases.",
+        reversible: true,
+      },
+      {
+        action: "instruction",
+        target: "verification",
+        change:
+          "Test connectivity to the corrected endpoint.",
+        rationale:
+          "Connectivity testing confirms the endpoint is reachable and responding correctly.",
+        reversible: true,
+      },
+    ],
+    dosage: {
+      parameters: {},
+      adjustments:
+        "If the user is using a custom proxy or private endpoint, do not override with defaults. Ask the user for the correct URL.",
+    },
+    side_effects: [
+      "Overriding a custom endpoint with the default may break intentional proxy configurations",
+    ],
+    contraindications: [
+      "Users intentionally using a custom API proxy or gateway",
+      "Air-gapped environments with private AI endpoints",
+    ],
+    efficacy: {
+      success_rate: 0.9,
+      sample_size: 0,
+      last_updated: "2026-03-12",
+      confidence_interval: "N/A",
+    },
+    created_by: "system",
+    created_at: "2026-03-12",
+  },
+
+  // ─── RX-CFG-004: Auth Recovery (CFG.3.1) ──────────────────────
+  {
+    id: "RX-CFG-004",
+    name: "Auth Recovery",
+    version: "1.0.0",
+    target_disease: "CFG.3.1",
+    target_frameworks: ["all"],
+    type: "acute",
+    risk_level: "medium",
+    auto_applicable: false,
+    steps: [
+      {
+        action: "instruction",
+        target: "diagnosis",
+        change:
+          "The API key is well-formed but being rejected. Check if the key has expired, been revoked, or belongs to a different account/project.",
+        rationale:
+          "Diagnosing the specific reason for rejection guides the user toward the correct resolution.",
+        reversible: true,
+      },
+      {
+        action: "instruction",
+        target: "user_interaction",
+        change:
+          "Ask the user to verify their key is still active in the provider's console. If expired, ask them to generate a new key.",
+        rationale:
+          "The user must verify key status in the provider's console since the agent cannot access it.",
+        reversible: true,
+      },
+      {
+        action: "config_suggestion",
+        target: "api_key",
+        change:
+          "Update the API key with the new valid key.",
+        rationale:
+          "Replacing the rejected key with a fresh, valid key resolves the authentication failure.",
+        reversible: true,
+      },
+      {
+        action: "instruction",
+        target: "verification",
+        change:
+          "Test the connection with the new key.",
+        rationale:
+          "Verification confirms the new key is accepted by the provider.",
+        reversible: true,
+      },
+    ],
+    dosage: {
+      parameters: {},
+      adjustments:
+        "If the key was revoked due to a security incident, advise the user to audit their key usage and rotate all related credentials.",
+    },
+    side_effects: [
+      "Old key is replaced and cannot be recovered if it was still valid for other services",
+      "User may need to update the key in multiple locations if it is shared across services",
+    ],
+    contraindications: [
+      "Environments where key rotation requires a formal change management process",
+    ],
+    efficacy: {
+      success_rate: 0.92,
+      sample_size: 0,
+      last_updated: "2026-03-12",
+      confidence_interval: "N/A",
+    },
+    created_by: "system",
+    created_at: "2026-03-12",
+  },
 ];

@@ -1,0 +1,21 @@
+{
+  "id": "claw-clinic",
+  "name": "Claw Clinic",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["backendUrl"],
+    "properties": {
+      "backendUrl": {
+        "type": "string",
+        "description": "URL of the Claw Clinic backend API"
+      }
+    }
+  },
+  "uiHints": {
+    "backendUrl": {
+      "label": "Backend URL",
+      "placeholder": "https://claw-clinic-api.example.com"
+    }
+  }
+}

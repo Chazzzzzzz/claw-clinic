@@ -1549,4 +1549,186 @@ export const MVP_DISEASES: DiseaseRecord[] = [
     last_updated: "2026-03-09",
     case_count: 0,
   },
+
+  // ─── CFG.1.1 API Key Format Error ──────────────────────────────
+  {
+    icd_ai_code: "CFG.1.1",
+    name: "API Key Format Error",
+    department: "Configuration",
+    description:
+      "Agent cannot connect to AI provider because the API key has an invalid format (wrong prefix, length, or character set). The key is present but incompatible with the expected provider format, causing authentication failures before the key is even validated server-side.",
+    diagnostic_criteria: {
+      vital_sign_thresholds: {
+        error_rate: { min: 0.8 },
+      },
+      base_weight: 0.9,
+      required_threshold_count: 1,
+      supporting_symptoms: [
+        "API key does not match expected provider format",
+        "401 or authentication error in logs",
+        "Connection refused to LLM endpoint",
+      ],
+      exclusion_criteria: [
+        "Key format matches the expected provider pattern",
+        "Authentication error is due to expired or revoked key, not format",
+      ],
+    },
+    severity: "High",
+    prevalence: "Common",
+    etiology: [
+      "User copied an API key from the wrong provider",
+      "Key was truncated during copy-paste",
+      "Environment variable contains extra whitespace or newline characters",
+      "Key from a different environment (test vs production) was used",
+    ],
+    progression:
+      "API key format errors cause immediate and total failure to connect to the AI provider. The agent cannot function at all until the key is corrected. Unlike auth failures where the key reaches the server, format errors are often caught client-side.",
+    medical_analogy: {
+      human_disease: "Blood Type Mismatch",
+      explanation:
+        "Like a blood type mismatch where the blood is present but incompatible with the recipient, the API key is present but incompatible with the provider. The system rejects it before it can be used.",
+    },
+    prescriptions: ["RX-CFG-001"],
+    first_documented: "2026-03-12",
+    last_updated: "2026-03-12",
+    case_count: 0,
+  },
+
+  // ─── CFG.1.2 API Key Missing ──────────────────────────────────
+  {
+    icd_ai_code: "CFG.1.2",
+    name: "API Key Missing",
+    department: "Configuration",
+    description:
+      "No API key configured at all — agent cannot authenticate with any AI provider. The key field is empty, undefined, or the environment variable is not set. Without a key, the agent simply cannot function.",
+    diagnostic_criteria: {
+      vital_sign_thresholds: {
+        error_rate: { min: 1.0 },
+      },
+      base_weight: 1.0,
+      required_threshold_count: 1,
+      supporting_symptoms: [
+        "API key field is empty or undefined",
+        "ANTHROPIC_API_KEY or similar env var not set",
+        "Agent fails immediately on startup with authentication error",
+      ],
+      exclusion_criteria: [
+        "API key is present but malformed (see CFG.1.1)",
+        "API key is present but rejected by provider (see CFG.3.1)",
+      ],
+    },
+    severity: "Critical",
+    prevalence: "Common",
+    etiology: [
+      "Fresh installation without completing configuration",
+      "Environment variable not set in deployment environment",
+      ".env file missing or not loaded",
+      "Configuration management system failed to inject the key",
+    ],
+    progression:
+      "A missing API key causes complete agent failure from the very first interaction. No AI capabilities are available. This is typically the first issue encountered during initial setup and is immediately obvious.",
+    medical_analogy: {
+      human_disease: "Missing Heart",
+      explanation:
+        "Like a body without a heart that simply cannot function, an agent without an API key has no way to connect to its AI provider. The most fundamental component required for operation is absent.",
+    },
+    prescriptions: ["RX-CFG-002"],
+    first_documented: "2026-03-12",
+    last_updated: "2026-03-12",
+    case_count: 0,
+  },
+
+  // ─── CFG.2.1 Endpoint Misconfiguration ────────────────────────
+  {
+    icd_ai_code: "CFG.2.1",
+    name: "Endpoint Misconfiguration",
+    department: "Configuration",
+    description:
+      "AI provider endpoint URL is malformed, unreachable, or pointing to wrong environment. The agent has valid credentials but cannot reach the AI provider because the endpoint URL is incorrect, causing connection timeouts or DNS failures.",
+    diagnostic_criteria: {
+      vital_sign_thresholds: {
+        error_rate: { min: 0.7 },
+        latency_p95_ms: { min: 30000 },
+      },
+      base_weight: 0.8,
+      required_threshold_count: 1,
+      supporting_symptoms: [
+        "Base URL is not a valid URL",
+        "DNS resolution failure",
+        "Connection timeout to API endpoint",
+        "SSL/TLS handshake failure",
+      ],
+      exclusion_criteria: [
+        "Endpoint is correct but temporarily down due to provider outage",
+        "Network connectivity issue unrelated to endpoint configuration",
+      ],
+    },
+    severity: "Moderate",
+    prevalence: "Moderate",
+    etiology: [
+      "Endpoint URL manually configured with typos",
+      "Endpoint pointing to a staging or development environment",
+      "Missing https:// protocol prefix",
+      "Trailing slashes or incorrect path segments in URL",
+      "Custom proxy endpoint that is misconfigured",
+    ],
+    progression:
+      "Endpoint misconfiguration causes connection failures that may be intermittent (if URL resolves but wrong server) or complete (if URL is invalid). The agent may hang waiting for timeouts before failing, causing poor user experience.",
+    medical_analogy: {
+      human_disease: "Severed Nerve",
+      explanation:
+        "Like a severed nerve where the pathway from the body to the brain is broken, endpoint misconfiguration breaks the pathway from the agent to the AI provider. The agent and provider are both functional, but the connection between them is severed.",
+    },
+    prescriptions: ["RX-CFG-003"],
+    first_documented: "2026-03-12",
+    last_updated: "2026-03-12",
+    case_count: 0,
+  },
+
+  // ─── CFG.3.1 Auth Failure ─────────────────────────────────────
+  {
+    icd_ai_code: "CFG.3.1",
+    name: "Auth Failure",
+    department: "Configuration",
+    description:
+      "API key is present and well-formed but rejected by the provider — expired, revoked, or associated with the wrong account. The key passes local format validation but fails server-side authentication, returning 401 or 403 responses.",
+    diagnostic_criteria: {
+      vital_sign_thresholds: {
+        error_rate: { min: 0.9 },
+      },
+      base_weight: 0.9,
+      required_threshold_count: 1,
+      supporting_symptoms: [
+        "401 Unauthorized response from AI provider",
+        "403 Forbidden response from AI provider",
+        "Key was previously valid but now fails",
+        "Error message mentions expired or revoked credentials",
+      ],
+      exclusion_criteria: [
+        "Key format does not match provider pattern (see CFG.1.1)",
+        "Error is due to rate limiting, not authentication",
+        "Error is due to insufficient permissions on a valid key",
+      ],
+    },
+    severity: "High",
+    prevalence: "Common",
+    etiology: [
+      "API key expired and was not rotated",
+      "Key was manually revoked in provider console",
+      "Key belongs to a different project or organization",
+      "Provider rotated keys as part of a security incident",
+      "Billing issue caused the account or key to be suspended",
+    ],
+    progression:
+      "Auth failures cause complete agent failure similar to a missing key, but are more confusing to diagnose because the key appears to be correctly configured. The agent may have worked previously and suddenly stopped, making it harder to identify the root cause.",
+    medical_analogy: {
+      human_disease: "Organ Rejection",
+      explanation:
+        "Like organ rejection where the body has a transplanted organ but the immune system rejects it, the agent has an API key but the provider rejects it. The component is present and appears correct, but the system refuses to accept it.",
+    },
+    prescriptions: ["RX-CFG-004"],
+    first_documented: "2026-03-12",
+    last_updated: "2026-03-12",
+    case_count: 0,
+  },
 ];
