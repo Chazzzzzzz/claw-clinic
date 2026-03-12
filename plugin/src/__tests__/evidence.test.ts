@@ -20,7 +20,7 @@ describe("maskApiKey()", () => {
 
 describe("detectProvider()", () => {
   it("detects Anthropic keys", () => {
-    expect(detectProvider("sk-ant-abcdefghijklmnopqrstuvwx")).toBe("anthropic");
+    expect(detectProvider("sk-ant-abcdefghijklmnopqrstuvwxyz0123456789ABCDE")).toBe("anthropic");
   });
 
   it("detects OpenAI keys", () => {
@@ -50,13 +50,13 @@ describe("validateKeyFormat()", () => {
   });
 
   it("accepts a valid Anthropic key", () => {
-    const result = validateKeyFormat("sk-ant-abcdefghijklmnopqrstuvwx");
+    const result = validateKeyFormat("sk-ant-abcdefghijklmnopqrstuvwxyz0123456789ABCDE");
     expect(result.valid).toBe(true);
     expect(result.detectedProvider).toBe("anthropic");
   });
 
   it("rejects when key provider mismatches expected provider", () => {
-    const result = validateKeyFormat("sk-ant-abcdefghijklmnopqrstuvwx", "openai");
+    const result = validateKeyFormat("sk-ant-abcdefghijklmnopqrstuvwxyz0123456789ABCDE", "openai");
     expect(result.valid).toBe(false);
     expect(result.issue).toContain("anthropic");
     expect(result.issue).toContain("openai");
@@ -72,11 +72,11 @@ describe("validateKeyFormat()", () => {
 describe("collectConfigEvidence()", () => {
   it("extracts a direct apiKey from config", () => {
     const evidence = collectConfigEvidence({
-      apiKey: "sk-ant-abcdefghijklmnopqrstuvwx",
+      apiKey: "sk-ant-abcdefghijklmnopqrstuvwxyz0123456789ABCDE",
     });
     expect(evidence.type).toBe("config");
     expect(evidence.apiKey).toBeDefined();
-    expect(evidence.apiKey!.masked).toBe("sk-ant-a...uvwx");
+    expect(evidence.apiKey!.masked).toBe("sk-ant-a...BCDE");
     expect(evidence.apiKey!.provider).toBe("anthropic");
   });
 
@@ -84,7 +84,7 @@ describe("collectConfigEvidence()", () => {
     const evidence = collectConfigEvidence({
       providers: {
         anthropic: {
-          apiKey: "sk-ant-abcdefghijklmnopqrstuvwx",
+          apiKey: "sk-ant-abcdefghijklmnopqrstuvwxyz0123456789ABCDE",
         },
       },
     });

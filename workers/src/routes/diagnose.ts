@@ -5,7 +5,7 @@ import {
   matchDiseases,
   createMinimalSymptomVector,
 } from "@claw-clinic/shared";
-import type { Evidence, ConfigEvidence } from "@claw-clinic/shared";
+import type { Evidence, ConfigEvidence, ConnectivityEvidence, EnvironmentEvidence, RuntimeEvidence } from "@claw-clinic/shared";
 import { createSession } from "./treat.js";
 import type { TreatmentStep } from "./types.js";
 
@@ -24,6 +24,9 @@ function analyzeConfigEvidence(evidence: ConfigEvidence[]): {
   severity: string;
   reasoning: string;
 } | null {
+  // Check if ANY config evidence has an API key
+  const hasAnyApiKey = evidence.some((ev) => ev.apiKey !== undefined);
+
   for (const ev of evidence) {
     // Check API key issues
     if (ev.apiKey) {
@@ -96,6 +99,19 @@ function analyzeConfigEvidence(evidence: ConfigEvidence[]): {
       }
     }
   }
+
+  // If no config evidence contained an API key at all
+  if (!hasAnyApiKey && evidence.length > 0) {
+    return {
+      icd_ai_code: "CFG.1.2",
+      name: "API Key Missing",
+      confidence: 0.9,
+      severity: "Critical",
+      reasoning:
+        "No API key was found in any configuration source. The agent cannot authenticate with any AI provider.",
+    };
+  }
+
   return null;
 }
 
@@ -168,9 +184,82 @@ diagnoseRouter.post("/diagnose", async (c) => {
       }
     }
 
-    // 2. Collect symptoms text from evidence and explicit symptoms param
+    // 2. Check connectivity evidence
+    const connectivityEvidence = evidence.filter(
+      (e): e is ConnectivityEvidence => e.type === "connectivity"
+    );
+    for (const conn of connectivityEvidence) {
+      const unreachable = conn.providers.filter((p) => !p.reachable);
+      if (unreachable.length > 0) {
+        const names = unreachable.map((p) => p.name).join(", ");
+        const errors = unreachable.map((p) => `${p.name}: ${p.error || "unreachable"}`).join("; ");
+        const treatmentPlan = buildTreatmentPlan("CFG.2.1");
+        if (treatmentPlan.length > 0) {
+          createSession(sessionId, "CFG.2.1", treatmentPlan);
+        }
+        return c.json({
+          sessionId,
+          diagnosis: {
+            icd_ai_code: "CFG.2.1",
+            name: "Endpoint Misconfiguration",
+            confidence: 0.85,
+            severity: "High",
+            reasoning: `Cannot reach AI provider(s): ${names}. Errors: ${errors}. Check network connectivity, DNS, and firewall rules.`,
+          },
+          differential: [],
+          treatmentPlan,
+          summary: `AI provider(s) unreachable: ${names}.`,
+        });
+      }
+
+      if (conn.gatewayReachable === false) {
+        return c.json({
+          sessionId,
+          diagnosis: {
+            icd_ai_code: "CFG.2.1",
+            name: "Gateway Unreachable",
+            confidence: 0.9,
+            severity: "Critical",
+            reasoning: "The OpenClaw gateway is not responding. The agent process may be down or the port may be blocked.",
+          },
+          differential: [],
+          treatmentPlan: [],
+          summary: "OpenClaw gateway is unreachable.",
+        });
+      }
+    }
+
     const symptomsFragments: string[] = [];
     if (symptoms) symptomsFragments.push(symptoms);
+
+    // 3. Enrich symptoms from all evidence types
+    const envEvidence = evidence.filter(
+      (e): e is EnvironmentEvidence => e.type === "environment"
+    );
+    const runtimeEvidence = evidence.filter(
+      (e): e is RuntimeEvidence => e.type === "runtime"
+    );
+
+    // Add environment/runtime context to symptoms for better matching
+    for (const env of envEvidence) {
+      if (env.plugins) {
+        const disabled = env.plugins.filter((p) => !p.enabled);
+        if (disabled.length > 0) {
+          symptomsFragments.push(`Disabled plugins: ${disabled.map((p) => p.id).join(", ")}`);
+        }
+      }
+    }
+
+    for (const rt of runtimeEvidence) {
+      if (rt.recentTraceStats) {
+        const stats = rt.recentTraceStats;
+        if (stats.loopDetected) symptomsFragments.push("loop detected in recent trace");
+        if (stats.errorCount > 0) symptomsFragments.push(`${stats.errorCount} errors in recent trace`);
+        if (stats.totalCostUsd > 1.0) symptomsFragments.push(`high cost: $${stats.totalCostUsd.toFixed(2)}`);
+      }
+    }
+
+    // 4. Collect symptoms text from behavior and log evidence
 
     for (const ev of evidence) {
       if (ev.type === "behavior") {
@@ -188,7 +277,7 @@ diagnoseRouter.post("/diagnose", async (c) => {
 
     const combinedSymptoms = symptomsFragments.join(" ");
 
-    // 3. Use shared diagnostic engine
+    // 5. Use shared diagnostic engine
     const symptomVector = createMinimalSymptomVector(
       combinedSymptoms || "unknown issue"
     );

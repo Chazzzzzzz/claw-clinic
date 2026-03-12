@@ -20,7 +20,56 @@ export interface BehaviorEvidence {
   symptoms?: string[];
 }
 
-export type Evidence = ConfigEvidence | LogEvidence | BehaviorEvidence;
+export interface ConnectivityEvidence {
+  type: "connectivity";
+  providers: Array<{
+    name: string;
+    endpoint: string;
+    reachable: boolean;
+    latencyMs?: number;
+    statusCode?: number;
+    error?: string;
+  }>;
+  gatewayReachable?: boolean;
+  gatewayLatencyMs?: number;
+}
+
+export interface EnvironmentEvidence {
+  type: "environment";
+  os?: string;
+  nodeVersion?: string;
+  openclawVersion?: string;
+  memoryUsageMb?: number;
+  uptimeSeconds?: number;
+  plugins?: Array<{ id: string; enabled: boolean }>;
+}
+
+export interface RuntimeEvidence {
+  type: "runtime";
+  modelName?: string;
+  modelProvider?: string;
+  contextWindowSize?: number;
+  recentTraceStats?: {
+    totalSteps: number;
+    errorCount: number;
+    avgLatencyMs: number;
+    totalTokens: number;
+    totalCostUsd: number;
+    toolCallCount: number;
+    toolSuccessCount: number;
+    loopDetected: boolean;
+  };
+  activeSessions?: number;
+  queueDepth?: number;
+}
+
+export type Evidence =
+  | ConfigEvidence
+  | LogEvidence
+  | BehaviorEvidence
+  | ConnectivityEvidence
+  | EnvironmentEvidence
+  | RuntimeEvidence;
 
 // ─── Treatment Types ────────────────────────────────────────────
 
@@ -59,12 +108,35 @@ export interface TreatmentResponse {
 
 // ─── Plugin API Types (minimal OpenClaw plugin API surface) ─────
 
+export interface CliRegistrationContext {
+  program: {
+    command(name: string): CliCommand;
+  };
+}
+
+export interface CliCommand {
+  command(name: string): CliCommand;
+  description(desc: string): CliCommand;
+  argument(name: string, desc: string): CliCommand;
+  option(flags: string, desc: string): CliCommand;
+  action(fn: (...args: unknown[]) => void | Promise<void>): CliCommand;
+}
+
+export interface CommandContext {
+  args: string;
+}
+
 export interface PluginApi {
   registerCommand(config: {
     name: string;
     description: string;
+    acceptsArgs?: boolean;
     handler: (ctx: CommandContext) => Promise<{ text: string }> | { text: string };
   }): void;
+  registerCli(
+    fn: (ctx: CliRegistrationContext) => void,
+    opts?: { commands?: string[] },
+  ): void;
   registerTool(config: {
     name: string;
     description: string;
@@ -76,19 +148,12 @@ export interface PluginApi {
     handler: (event: unknown, ctx: unknown) => Record<string, string | undefined>,
     options?: { priority?: number },
   ): void;
+  sendChatMessage?(channelId: string, text: string): Promise<void>;
   logger: {
     info(msg: string): void;
     error(msg: string): void;
     warn(msg: string): void;
     debug(msg: string): void;
   };
-  config: Record<string, unknown>;
-}
-
-export interface CommandContext {
-  senderId: string;
-  channel: string;
-  args: string[];
-  commandBody: string;
   config: Record<string, unknown>;
 }

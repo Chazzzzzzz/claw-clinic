@@ -18,4 +18,53 @@ export interface BehaviorEvidence {
   symptoms?: string[];
 }
 
-export type Evidence = ConfigEvidence | LogEvidence | BehaviorEvidence;
+export interface ConnectivityEvidence {
+  type: "connectivity";
+  providers: Array<{
+    name: string;
+    endpoint: string;
+    reachable: boolean;
+    latencyMs?: number;
+    statusCode?: number;
+    error?: string;
+  }>;
+  gatewayReachable?: boolean;
+  gatewayLatencyMs?: number;
+}
+
+export interface EnvironmentEvidence {
+  type: "environment";
+  os?: string;
+  nodeVersion?: string;
+  openclawVersion?: string;
+  memoryUsageMb?: number;
+  uptimeSeconds?: number;
+  plugins?: Array<{ id: string; enabled: boolean }>;
+}
+
+export interface RuntimeEvidence {
+  type: "runtime";
+  modelName?: string;
+  modelProvider?: string;
+  contextWindowSize?: number;
+  recentTraceStats?: {
+    totalSteps: number;
+    errorCount: number;
+    avgLatencyMs: number;
+    totalTokens: number;
+    totalCostUsd: number;
+    toolCallCount: number;
+    toolSuccessCount: number;
+    loopDetected: boolean;
+  };
+  activeSessions?: number;
+  queueDepth?: number;
+}
+
+export type Evidence =
+  | ConfigEvidence
+  | LogEvidence
+  | BehaviorEvidence
+  | ConnectivityEvidence
+  | EnvironmentEvidence
+  | RuntimeEvidence;

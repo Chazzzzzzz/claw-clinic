@@ -1,12 +1,16 @@
 import type { PluginApi, Evidence } from "../types.js";
 import { ClawClinicClient } from "../client.js";
-import { collectConfigEvidence } from "../evidence.js";
+import { collectAllEvidence } from "../evidence.js";
+import { validateLocally } from "../validation.js";
+import { ClinicNotifier } from "../notifier.js";
+import { runTreatmentLoop } from "../treatment-loop.js";
 
 export function registerDiagnoseTool(api: PluginApi, client: ClawClinicClient): void {
   api.registerTool({
     name: "clinic_diagnose",
     description:
-      "Diagnose agent health issues. Collects config evidence automatically and combines with provided symptoms/logs. Returns a diagnosis and treatment plan.",
+      "Full diagnostic workflow: validates locally, collects evidence (config, logs, connectivity, environment, runtime), " +
+      "sends to backend for AI diagnosis, then auto-executes treatment steps. Pauses if user input is needed.",
     parameters: {
       type: "object",
       properties: {
@@ -14,54 +18,61 @@ export function registerDiagnoseTool(api: PluginApi, client: ClawClinicClient): 
           type: "string",
           description: "Description of the issue (e.g., 'agent cannot connect to AI provider')",
         },
-        logs: {
+        channelId: {
           type: "string",
-          description: "Relevant error logs or output",
-        },
-        configDump: {
-          type: "object",
-          description: "Raw configuration object to inspect",
+          description: "Chat channel ID to send progress updates to",
         },
       },
     },
     execute: async (_id: string, params: Record<string, unknown>) => {
+      // Handle command-dispatch: tool format ({ command, commandName, skillName })
+      // as well as normal tool call format ({ symptoms, channelId })
+      const rawCommand = params.command as string | undefined;
+      const symptoms = rawCommand?.trim() || (params.symptoms as string | undefined);
+      const channelId = (params.channelId as string) || _id;
+      const notifier = new ClinicNotifier(api, channelId
+        ? { mode: "chat", channelId }
+        : { mode: "tool" });
+
       try {
-        const evidence: Evidence[] = [];
+        // ── Step 1: Local quick validation ───────────────────
+        await notifier.status("Running local validation...");
+        const localResult = await validateLocally(api.config);
 
-        // Auto-collect config evidence from plugin context
-        const configEvidence = collectConfigEvidence(api.config);
-        evidence.push(configEvidence);
-
-        // Add user-provided logs as log evidence
-        if (typeof params.logs === "string" && params.logs.trim()) {
-          evidence.push({
-            type: "log",
-            entries: params.logs.split("\n").filter((l: string) => l.trim()),
-          });
+        if (localResult.quickIssues.length > 0) {
+          await notifier.status(`Local check found ${localResult.quickIssues.length} issue(s): ${localResult.quickIssues.join("; ")}`);
+        } else {
+          await notifier.status("Local validation passed — no obvious issues.");
         }
 
-        // Add user-provided config dump
-        if (params.configDump && typeof params.configDump === "object") {
-          const dumpEvidence = collectConfigEvidence(params.configDump as Record<string, unknown>);
-          if (dumpEvidence.apiKey || dumpEvidence.endpoint) {
-            evidence.push(dumpEvidence);
-          }
-        }
+        // ── Step 2: Collect all evidence ─────────────────────
+        await notifier.status("Collecting evidence (config, logs, connectivity, environment, runtime)...");
+        const evidence: Evidence[] = await collectAllEvidence(api.config);
 
         // Add behavior evidence if symptoms provided
-        if (typeof params.symptoms === "string" && params.symptoms.trim()) {
+        if (symptoms) {
+          evidence.push({ type: "behavior", description: symptoms });
+        }
+
+        // Include local validation issues as additional behavior evidence
+        if (localResult.quickIssues.length > 0) {
           evidence.push({
             type: "behavior",
-            description: params.symptoms,
+            description: "Local validation issues detected",
+            symptoms: localResult.quickIssues,
           });
         }
 
+        await notifier.status(`Collected ${evidence.length} evidence items: ${evidence.map((e) => e.type).join(", ")}`);
+
+        // ── Step 3: Send to backend for diagnosis ────────────
+        await notifier.status("Sending to backend for AI diagnosis...");
         const diagnosis = await client.diagnose(
           evidence,
-          typeof params.symptoms === "string" ? params.symptoms : undefined,
+          symptoms,
         );
 
-        // Format response for the agent
+        // Build diagnosis summary
         const parts: string[] = [];
         parts.push(`SESSION: ${diagnosis.sessionId}`);
         parts.push("");
@@ -72,29 +83,50 @@ export function registerDiagnoseTool(api: PluginApi, client: ClawClinicClient): 
           parts.push(`SEVERITY: ${d.severity}`);
           parts.push(`CONFIDENCE: ${(d.confidence * 100).toFixed(0)}%`);
           parts.push(`REASONING: ${d.reasoning}`);
+
+          await notifier.status(`Diagnosis: ${d.name} (${d.severity}, ${(d.confidence * 100).toFixed(0)}% confidence)`);
         } else {
           parts.push("DIAGNOSIS: No issues detected.");
+          await notifier.success("No issues detected. Your agent appears healthy.");
+          return { content: [{ type: "text", text: parts.join("\n") }] };
         }
 
+        // ── Step 4: Auto-execute treatment loop ──────────────
         if (diagnosis.treatmentPlan.length > 0) {
+          await notifier.status(`Starting treatment (${diagnosis.treatmentPlan.length} steps)...`);
+
+          const loopResult = await runTreatmentLoop({
+            client,
+            sessionId: diagnosis.sessionId,
+            treatmentPlan: diagnosis.treatmentPlan,
+            notifier,
+            config: api.config,
+          });
+
           parts.push("");
-          parts.push("TREATMENT PLAN:");
-          for (const step of diagnosis.treatmentPlan) {
-            parts.push(`  STEP ${step.id}: [${step.action}] ${step.description}`);
-            if (step.requiresUserInput && step.inputPrompt) {
-              parts.push(`    → REQUIRES USER INPUT: ${step.inputPrompt}`);
-            }
+          parts.push(`TREATMENT: ${loopResult.status.toUpperCase()}`);
+          parts.push(`Steps completed: ${loopResult.stepsCompleted}/${loopResult.stepsTotal}`);
+          parts.push(loopResult.message);
+
+          if (loopResult.status === "paused_for_input" && loopResult.pendingStep) {
+            parts.push("");
+            parts.push(`AWAITING INPUT for step "${loopResult.pendingStep.id}": ${loopResult.pendingStep.inputPrompt || loopResult.pendingStep.description}`);
+            parts.push(`To continue, call clinic_treat with sessionId="${diagnosis.sessionId}" and stepId="${loopResult.pendingStep.id}" and the user's input.`);
           }
+        }
+
+        // Include notifier buffer for full audit trail
+        const progressLog = notifier.getBuffer();
+        if (progressLog.length > 0) {
           parts.push("");
-          parts.push(
-            "To execute treatment, call clinic_treat for each step in order. " +
-            "For steps requiring user input, ask the user first, then pass their response.",
-          );
+          parts.push("PROGRESS LOG:");
+          parts.push(...progressLog);
         }
 
         return { content: [{ type: "text", text: parts.join("\n") }] };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        await notifier.error(message);
         return { content: [{ type: "text", text: `Diagnosis error: ${message}` }] };
       }
     },

@@ -1,6 +1,7 @@
 {
   "id": "claw-clinic",
   "name": "Claw Clinic",
+  "skills": ["skills/claw-clinic"],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

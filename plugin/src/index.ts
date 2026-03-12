@@ -1,6 +1,7 @@
 import type { PluginApi } from "./types.js";
 import { ClawClinicClient } from "./client.js";
 import { registerClinicCommand } from "./commands/clinic.js";
+import { registerClinicChatCommand } from "./commands/chat-clinic.js";
 import { registerDiagnoseTool } from "./tools/diagnose.js";
 import { registerTreatTool } from "./tools/treat.js";
 
@@ -14,7 +15,10 @@ export default function register(api: PluginApi): void {
 
   api.logger.info(`Claw Clinic plugin loaded — backend: ${backendUrl}`);
 
-  // Register user-triggered command
+  // Register /clinic chat command (bypasses LLM, runs directly)
+  registerClinicChatCommand(api, client);
+
+  // Register CLI commands (openclaw claw-clinic diagnose/treat/health)
   registerClinicCommand(api, client);
 
   // Register agent-triggered tools
@@ -27,8 +31,11 @@ export default function register(api: PluginApi): void {
       appendSystemContext: [
         "You have access to Claw Clinic diagnostic tools.",
         "If you encounter errors connecting to AI providers, authentication failures,",
-        "or configuration issues, use the clinic_diagnose tool to get a diagnosis",
-        "and clinic_treat to execute the treatment plan step by step.",
+        "or configuration issues, use clinic_diagnose which will automatically",
+        "validate locally, collect evidence, diagnose the issue, and execute treatment steps.",
+        "It will pause and return instructions if user input is needed.",
+        "Use clinic_treat only to resume after providing user input for a paused step.",
+        "Users can also type /clinic in chat to trigger diagnosis directly.",
       ].join(" "),
     };
   }, { priority: 50 });
