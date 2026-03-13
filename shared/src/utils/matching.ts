@@ -53,12 +53,15 @@ export function matchDiseases(
       }
     }
 
-    // Must meet required threshold count (minimum 1 even if required_threshold_count is 0)
-    const effectiveRequired = Math.max(criteria.required_threshold_count, 1);
-    if (thresholdsExceeded < effectiveRequired) continue;
-
-    // Diseases with no thresholds require supporting symptom text to match
-    if (totalThresholds === 0 && !additionalContext?.symptoms_text) continue;
+    // For diseases WITH thresholds: must meet at least required_threshold_count (minimum 1)
+    // For diseases WITHOUT thresholds (text-only): skip threshold check, rely on supporting symptoms
+    if (totalThresholds > 0) {
+      const effectiveRequired = Math.max(criteria.required_threshold_count, 1);
+      if (thresholdsExceeded < effectiveRequired) continue;
+    } else {
+      // Text-only disease — require symptom text to proceed
+      if (!additionalContext?.symptoms_text) continue;
+    }
 
     let thresholdScore = totalThresholds > 0 ? thresholdsExceeded / totalThresholds : 0;
 
@@ -94,8 +97,12 @@ export function matchDiseases(
     }
 
     // Final confidence
+    // For text-only diseases (no thresholds), use base_weight when supporting symptoms match
+    const baseScore = totalThresholds > 0
+      ? thresholdScore * criteria.base_weight
+      : (matchedSupporting.length > 0 ? criteria.base_weight : 0);
     const confidence = Math.max(0, Math.min(1,
-      thresholdScore * criteria.base_weight + supportingBonus - exclusionPenalty
+      baseScore + supportingBonus - exclusionPenalty
     ));
 
     if (confidence >= 0.1) {

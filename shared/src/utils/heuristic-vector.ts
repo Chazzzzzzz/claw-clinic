@@ -98,9 +98,10 @@ export function createMinimalSymptomVector(symptomsText: string): SymptomVector 
     // Keep neutral vector — these should be caught by config evidence, not symptom matching
   }
 
-  // Rate limiting — keep neutral, should be caught by connectivity evidence
+  // Rate limiting — high error rate, tools failing due to throttling
   if (lower.includes("429") || lower.includes("rate limit") || lower.includes("too many request")) {
-    // Keep neutral — CFG.3.1 via connectivity evidence handles this
+    sv.error_rate = 0.4;
+    sv.tool_success_rate = 0.35;
   }
 
   // Bot / channel not responding
