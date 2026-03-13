@@ -120,8 +120,8 @@ describe("createMinimalSymptomVector", () => {
     expect(sv.output_diversity_score).toBeLessThan(0.5);
   });
 
-  it("handles keyword 'error' by setting error_rate", () => {
-    const sv = createMinimalSymptomVector("The agent keeps getting errors");
+  it("handles tool failure keywords by setting error_rate", () => {
+    const sv = createMinimalSymptomVector("The agent's tool calling keeps failing with tool errors");
     expect(sv.error_rate).toBeGreaterThan(0.1);
     expect(sv.tool_success_rate).toBeLessThan(0.5);
   });

@@ -6,7 +6,7 @@ import type {
   RuntimeEvidence,
   Evidence,
 } from "./types.js";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { homedir, platform, release, freemem, uptime } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
@@ -18,7 +18,7 @@ const execFileAsync = promisify(execFile);
 
 /** Known API key format patterns by provider. */
 /** Known API key format patterns by provider with expected length ranges. */
-const KEY_PATTERNS: Record<string, { regex: RegExp; minLen: number; maxLen: number }> = {
+export const KEY_PATTERNS: Record<string, { regex: RegExp; minLen: number; maxLen: number }> = {
   anthropic_api: { regex: /^sk-ant-api\d{2}-[a-zA-Z0-9_-]+$/, minLen: 90, maxLen: 130 },
   anthropic_oauth: { regex: /^sk-ant-oat\d{2}-[a-zA-Z0-9_-]+$/, minLen: 90, maxLen: 130 },
   anthropic_legacy: { regex: /^sk-ant-[a-zA-Z0-9_-]{20,}$/, minLen: 40, maxLen: 130 },
@@ -262,6 +262,72 @@ export async function extractApiKeyFromAuthProfiles(): Promise<string | undefine
     }
   }
   return undefined;
+}
+
+/**
+ * Write an API key to auth-profiles.json.
+ * Upserts the profile and updates lastGood. Never throws.
+ */
+export async function writeApiKeyToAuthProfiles(
+  apiKey: string,
+  provider: string,
+): Promise<{ success: boolean; path: string; error?: string }> {
+  const paths = [
+    join(homedir(), ".openclaw", "agents", "main", "agent", "auth-profiles.json"),
+    join(homedir(), ".openclaw", "agents", "default", "agent", "auth-profiles.json"),
+  ];
+
+  // Find existing file or use first path
+  let targetPath = paths[0];
+  for (const p of paths) {
+    try {
+      await readFile(p, "utf-8");
+      targetPath = p;
+      break;
+    } catch {
+      // continue
+    }
+  }
+
+  try {
+    // Read existing or start fresh
+    let data: Record<string, unknown>;
+    try {
+      const raw = await readFile(targetPath, "utf-8");
+      data = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      data = { version: 1, profiles: {}, lastGood: {} };
+    }
+
+    // Ensure profiles and lastGood exist
+    if (!data.profiles || typeof data.profiles !== "object") {
+      data.profiles = {};
+    }
+    if (!data.lastGood || typeof data.lastGood !== "object") {
+      data.lastGood = {};
+    }
+
+    const profileKey = `${provider}:default`;
+    (data.profiles as Record<string, unknown>)[profileKey] = {
+      type: "token",
+      provider,
+      token: apiKey,
+    };
+    (data.lastGood as Record<string, string>)[provider] = profileKey;
+
+    // Ensure parent directory exists
+    const dir = targetPath.substring(0, targetPath.lastIndexOf("/"));
+    await mkdir(dir, { recursive: true });
+
+    await writeFile(targetPath, JSON.stringify(data, null, 2));
+    return { success: true, path: targetPath };
+  } catch (err) {
+    return {
+      success: false,
+      path: targetPath,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
 }
 
 /** Collect recent gateway logs, sanitized. */

@@ -1,13 +1,31 @@
 import type { PluginApi, ConnectivityEvidence } from "../types.js";
+import type { StoredSession } from "../session-store.js";
 import { ClawClinicClient } from "../client.js";
-import { collectAllEvidence } from "../evidence.js";
+import {
+  collectAllEvidence,
+  collectConnectivityEvidence,
+  collectConfigEvidence,
+  validateKeyFormat,
+  extractApiKey,
+  detectProvider,
+  maskApiKey,
+  writeApiKeyToAuthProfiles,
+} from "../evidence.js";
 import { validateLocally } from "../validation.js";
 import { runTreatmentLoop } from "../treatment-loop.js";
 import { ClinicNotifier } from "../notifier.js";
+import { loadSession, saveSession, clearSession } from "../session-store.js";
+import { getUserGuide, getKeyLengthGuide } from "../user-guides.js";
 
 /**
  * Register /clinic as a chat command via registerCommand.
  * This bypasses the LLM entirely — works even when AI model is down.
+ *
+ * Usage:
+ *   /clinic           — run a fresh diagnosis
+ *   /clinic help      — re-send guide for current pending step
+ *   /clinic <input>   — if a session is pending, provide follow-up input;
+ *                        otherwise run diagnosis with <input> as symptoms
  */
 export function registerClinicChatCommand(api: PluginApi, client: ClawClinicClient): void {
   api.registerCommand({
@@ -15,138 +33,493 @@ export function registerClinicChatCommand(api: PluginApi, client: ClawClinicClie
     description: "Run a health check — diagnose and treat agent issues (no AI model needed)",
     acceptsArgs: true,
     handler: async (ctx) => {
-      const symptoms = ctx.args?.trim() || undefined;
-      const lines: string[] = [];
+      const input = ctx.args?.trim() || undefined;
+      const channelId = ctx.channelId;
 
-      try {
-        // Step 1: Local validation
-        lines.push("Running local validation...");
-        const localResult = await validateLocally(api.config);
-
-        if (localResult.quickIssues.length > 0) {
-          lines.push(`Found ${localResult.quickIssues.length} issue(s):`);
-          for (const issue of localResult.quickIssues) {
-            lines.push(`  - ${issue}`);
+      // --- If user provided input, check for a pending session first ---
+      if (input) {
+        const pending = await loadSession();
+        if (pending) {
+          // Req 1c: /clinic help re-sends the guide for the current step
+          if (input.toLowerCase() === "help") {
+            const guide = getUserGuide(pending.diagnosisCode, pending.detectedProvider);
+            return { text: `**${pending.diagnosisName}** — here are the instructions again:\n\n${guide}` };
           }
-        } else {
-          lines.push("Local validation passed.");
+          return await handleFollowUp(api, client, pending, input);
         }
-
-        // Step 2: Collect evidence
-        lines.push("\nCollecting evidence...");
-        const evidence = await collectAllEvidence(api.config);
-
-        if (symptoms) {
-          evidence.push({ type: "behavior", description: symptoms });
-        }
-        if (localResult.quickIssues.length > 0) {
-          evidence.push({ type: "behavior", description: "Local validation issues", symptoms: localResult.quickIssues });
-        }
-
-        lines.push(`Collected: ${evidence.map((e) => e.type).join(", ")}`);
-
-        // Step 2.5: Check connectivity evidence locally for auth failures
-        const connEvidence = evidence.find((e): e is ConnectivityEvidence => e.type === "connectivity");
-        if (connEvidence) {
-          const authFailed = connEvidence.providers.filter((p) => p.authStatus === "failed");
-          const serverErrors = connEvidence.providers.filter((p) => p.authStatus === "server_error");
-          const rateLimited = connEvidence.providers.filter((p) => p.authStatus === "rate_limited");
-
-          if (authFailed.length > 0) {
-            lines.push("\n**Auth Failure Detected Locally**");
-            for (const p of authFailed) {
-              lines.push(`  - ${p.name}: authentication rejected (HTTP ${p.authStatusCode})`);
-              if (p.authError) {
-                // Extract just the message from JSON error if possible
-                try {
-                  const parsed = JSON.parse(p.authError);
-                  const msg = parsed?.error?.message || parsed?.error?.type || p.authError;
-                  lines.push(`    ${msg}`);
-                } catch {
-                  lines.push(`    ${p.authError.slice(0, 200)}`);
-                }
-              }
-            }
-          }
-
-          if (serverErrors.length > 0) {
-            lines.push("\n**Provider Service Errors**");
-            for (const p of serverErrors) {
-              lines.push(`  - ${p.name}: server error — ${p.authError || "service unavailable"}`);
-            }
-          }
-
-          if (rateLimited.length > 0) {
-            lines.push("\n**Rate Limited**");
-            for (const p of rateLimited) {
-              lines.push(`  - ${p.name}: rate limited (HTTP 429)`);
-            }
-          }
-        }
-
-        // Step 3: Backend diagnosis
-        lines.push("\nSending to backend for diagnosis...");
-        let diagnosis;
-        try {
-          diagnosis = await client.diagnose(evidence, symptoms);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          lines.push(`Backend error: ${msg}`);
-
-          // Still report local findings if backend is down
-          if (localResult.quickIssues.length > 0) {
-            lines.push("\nLocal findings (backend unavailable):");
-            for (const issue of localResult.quickIssues) {
-              lines.push(`  - ${issue}`);
-            }
-          }
-          return { text: lines.join("\n") };
-        }
-
-        if (diagnosis.diagnosis) {
-          const d = diagnosis.diagnosis;
-          lines.push(`\n**Diagnosis: ${d.name}** (${d.icd_ai_code})`);
-          lines.push(`Severity: ${d.severity} | Confidence: ${(d.confidence * 100).toFixed(0)}%`);
-          lines.push(`\n${d.reasoning}`);
-        } else {
-          lines.push("\n**No issues detected.** Your agent appears healthy.");
-          return { text: lines.join("\n") };
-        }
-
-        // Step 4: Auto-execute treatment
-        if (diagnosis.treatmentPlan.length > 0) {
-          lines.push(`\nStarting treatment (${diagnosis.treatmentPlan.length} steps)...`);
-
-          const notifier = new ClinicNotifier(api, { mode: "tool" });
-
-          const loopResult = await runTreatmentLoop({
-            client,
-            sessionId: diagnosis.sessionId,
-            treatmentPlan: diagnosis.treatmentPlan,
-            notifier,
-            config: api.config,
-          });
-
-          // Append notifier buffer
-          for (const msg of notifier.getBuffer()) {
-            lines.push(msg);
-          }
-
-          lines.push(`\n**Result:** ${loopResult.status} (${loopResult.stepsCompleted}/${loopResult.stepsTotal} steps)`);
-          lines.push(loopResult.message);
-
-          if (loopResult.status === "paused_for_input" && loopResult.pendingStep) {
-            lines.push(`\nStep "${loopResult.pendingStep.id}" needs your input:`);
-            lines.push(loopResult.pendingStep.inputPrompt || loopResult.pendingStep.description);
-            lines.push(`\nProvide input with: /clinic_treat ${diagnosis.sessionId} ${loopResult.pendingStep.id} <your input>`);
-          }
-        }
-
-        return { text: lines.join("\n") };
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        return { text: `Clinic error: ${message}` };
+        // No pending session → treat input as symptoms for a fresh diagnosis
       }
+
+      // --- Fresh diagnosis ---
+      return await runDiagnosis(api, client, input, channelId);
     },
   });
+}
+
+// ─── Ambiguity detection (Req 1b) ───────────────────────────────
+
+const AMBIGUOUS_PATTERNS = [
+  /\bwhat\b/i,
+  /\bhow\b/i,
+  /\bwhy\b/i,
+  /\?/,
+  /\bi don'?t understand\b/i,
+  /\bhelp\b/i,
+  /\bstill not working\b/i,
+  /\bstill broken\b/i,
+];
+
+const AFFIRMATIVE_PATTERNS = [
+  /\bdone\b/i,
+  /\bupdated\b/i,
+  /\bfixed\b/i,
+  /\bchanged\b/i,
+  /\bnew key\b/i,
+];
+
+function isAmbiguousResponse(text: string): boolean {
+  const hasAmbiguous = AMBIGUOUS_PATTERNS.some((p) => p.test(text));
+  if (!hasAmbiguous) return false;
+  // If also contains affirmative, treat as affirmative
+  const hasAffirmative = AFFIRMATIVE_PATTERNS.some((p) => p.test(text));
+  return !hasAffirmative;
+}
+
+function isAffirmativeResponse(text: string): boolean {
+  return AFFIRMATIVE_PATTERNS.some((p) => p.test(text));
+}
+
+// ─── Re-verification (Req 1a) ──────────────────────────────────
+
+interface VerificationResult {
+  passed: boolean;
+  checkDescription: string;
+  error?: string;
+}
+
+async function reVerify(
+  diagnosisCode: string,
+  config: Record<string, unknown>,
+): Promise<VerificationResult> {
+  switch (diagnosisCode) {
+    case "CFG.3.1": {
+      // Auth Failure: re-run connectivity and check authStatus
+      const conn = await collectConnectivityEvidence(config);
+      const failedProviders = conn.providers.filter((p) => p.authStatus === "failed");
+      if (failedProviders.length > 0) {
+        const names = failedProviders.map((p) => `${p.name} (HTTP ${p.authStatusCode})`).join(", ");
+        return { passed: false, checkDescription: "API key authentication", error: `Auth still failing for: ${names}` };
+      }
+      return { passed: true, checkDescription: "API key authentication" };
+    }
+
+    case "CFG.1.2": {
+      // API Key Missing: re-run config evidence and check if key is present
+      const configEvidence = collectConfigEvidence(config);
+      if (!configEvidence.apiKey) {
+        return { passed: false, checkDescription: "API key presence", error: "No API key found in config. Make sure you ran the config set command." };
+      }
+      return { passed: true, checkDescription: "API key presence" };
+    }
+
+    case "CFG.2.1": {
+      // Endpoint Misconfiguration: re-run connectivity and check reachability
+      const conn = await collectConnectivityEvidence(config);
+      const unreachable = conn.providers.filter((p) => !p.reachable);
+      if (unreachable.length > 0) {
+        const names = unreachable.map((p) => `${p.name}: ${p.error || "unreachable"}`).join(", ");
+        return { passed: false, checkDescription: "endpoint reachability", error: `Still unreachable: ${names}` };
+      }
+      return { passed: true, checkDescription: "endpoint reachability" };
+    }
+
+    case "CFG.1.1": {
+      // API Key Format Error: re-validate key format
+      const apiKey = extractApiKey(config);
+      if (!apiKey) {
+        return { passed: false, checkDescription: "API key format", error: "No API key found to validate." };
+      }
+      const validation = validateKeyFormat(apiKey);
+      if (!validation.valid) {
+        return { passed: false, checkDescription: "API key format", error: validation.issue || "Key format is still invalid." };
+      }
+      return { passed: true, checkDescription: "API key format" };
+    }
+
+    default:
+      // No re-verification available for this code — pass through
+      return { passed: true, checkDescription: "general check" };
+  }
+}
+
+// ─── Fresh diagnosis flow ───────────────────────────────────────
+
+async function runDiagnosis(
+  api: PluginApi,
+  client: ClawClinicClient,
+  symptoms: string | undefined,
+  channelId: string | undefined,
+): Promise<{ text: string }> {
+  // Clear any stale session
+  await clearSession();
+
+  // Progress ticker: sends an update every 10s for long operations
+  let tickCount = 0;
+  const TICK_MESSAGES = [
+    "Still checking...",
+    "Collecting diagnostic data...",
+    "Analyzing your agent...",
+    "Almost done...",
+  ];
+  let tickTimer: ReturnType<typeof setInterval> | undefined;
+
+  if (channelId && api.sendChatMessage) {
+    tickTimer = setInterval(async () => {
+      const msg = TICK_MESSAGES[Math.min(tickCount, TICK_MESSAGES.length - 1)];
+      tickCount++;
+      try { await api.sendChatMessage!(channelId, msg); } catch { /* ignore */ }
+    }, 10_000);
+  }
+
+  const stopTicker = () => { if (tickTimer) { clearInterval(tickTimer); tickTimer = undefined; } };
+
+  try {
+    // Step 1: Local validation
+    const localResult = await validateLocally(api.config);
+
+    // Step 2: Collect evidence
+    const evidence = await collectAllEvidence(api.config);
+
+    if (symptoms) {
+      evidence.push({ type: "behavior", description: symptoms });
+    }
+    if (localResult.quickIssues.length > 0) {
+      evidence.push({ type: "behavior", description: "Local validation issues", symptoms: localResult.quickIssues });
+    }
+
+    // Step 2.5: Check connectivity evidence locally for auth failures
+    const connEvidence = evidence.find((e): e is ConnectivityEvidence => e.type === "connectivity");
+    const localAuthIssue = formatLocalAuthIssue(connEvidence);
+
+    // Detect provider for guide personalization
+    const apiKey = extractApiKey(api.config);
+    const detectedProvider = apiKey ? detectProvider(apiKey) : undefined;
+
+    // Step 3: Backend diagnosis
+    let diagnosis;
+    try {
+      diagnosis = await client.diagnose(evidence, symptoms);
+    } catch (err) {
+      stopTicker();
+      const msg = err instanceof Error ? err.message : String(err);
+      if (localAuthIssue) return { text: localAuthIssue };
+      if (localResult.quickIssues.length > 0) {
+        return { text: localResult.quickIssues.map((i) => `- ${i}`).join("\n") };
+      }
+      return { text: `Could not reach diagnostic backend: ${msg}` };
+    }
+
+    if (!diagnosis.diagnosis) {
+      stopTicker();
+      return { text: "Your agent appears healthy. No issues detected." };
+    }
+
+    // Step 4: Auto-execute treatment
+    if (diagnosis.treatmentPlan.length > 0) {
+      const notifier = new ClinicNotifier(api, { mode: "tool" });
+
+      const loopResult = await runTreatmentLoop({
+        client,
+        sessionId: diagnosis.sessionId,
+        treatmentPlan: diagnosis.treatmentPlan,
+        notifier,
+        config: api.config,
+      });
+
+      stopTicker();
+
+      // If paused for input, save session so /clinic <input> resumes
+      if (loopResult.status === "paused_for_input" && loopResult.pendingStep) {
+        await saveSession({
+          sessionId: diagnosis.sessionId,
+          pendingStepId: loopResult.pendingStep.id,
+          pendingPrompt: loopResult.pendingStep.inputPrompt || loopResult.pendingStep.description,
+          diagnosisCode: diagnosis.diagnosis.icd_ai_code,
+          diagnosisName: diagnosis.diagnosis.name,
+          createdAt: new Date().toISOString(),
+          detectedProvider,
+        });
+      }
+
+      return { text: formatResult(diagnosis.diagnosis, loopResult, detectedProvider) };
+    }
+
+    stopTicker();
+    return { text: formatDiagnosisOnly(diagnosis.diagnosis) };
+  } catch (err) {
+    stopTicker();
+    const message = err instanceof Error ? err.message : String(err);
+    return { text: `Clinic error: ${message}` };
+  }
+}
+
+// ─── Follow-up flow (resume pending session) ────────────────────
+
+async function handleFollowUp(
+  api: PluginApi,
+  client: ClawClinicClient,
+  session: StoredSession,
+  userInput: string,
+): Promise<{ text: string }> {
+  // Detect pasted API key — check BEFORE ambiguity detection
+  const trimmedInput = userInput.trim();
+  const inputProvider = detectProvider(trimmedInput);
+
+  if (inputProvider) {
+    // User pasted a key — validate format
+    const validation = validateKeyFormat(trimmedInput);
+    if (!validation.valid) {
+      // Bad format — show length guide, don't write
+      const lengthGuide = getKeyLengthGuide(trimmedInput.length, inputProvider);
+      return { text: `That key doesn't look right: ${validation.issue}\n\n${lengthGuide}\n\nPlease paste the correct full key.` };
+    }
+
+    // Valid format — write to auth-profiles.json
+    const writeResult = await writeApiKeyToAuthProfiles(trimmedInput, inputProvider);
+    if (!writeResult.success) {
+      return { text: `Could not save the key: ${writeResult.error}\n\nAs a fallback, run this in your terminal:\n  openclaw config set ${inputProvider}.apiKey ${maskApiKey(trimmedInput)}...\nThen reply: /clinic done` };
+    }
+
+    // Re-verify connection with the new key
+    const verification = await reVerify(session.diagnosisCode, api.config);
+    if (verification.passed) {
+      // Report success to backend with masked key
+      try {
+        await client.treat(session.sessionId, session.pendingStepId, {
+          success: true,
+          data: { userInput: maskApiKey(trimmedInput), keyUpdated: true, provider: inputProvider },
+        });
+      } catch {
+        // Backend report is best-effort
+      }
+      await clearSession();
+      return { text: `Your new ${inputProvider} API key is working. The issue is fixed.\n\nFor security, please delete the message containing your API key from this chat.` };
+    } else {
+      // Key saved but doesn't work
+      await saveSession({
+        sessionId: session.sessionId,
+        pendingStepId: session.pendingStepId,
+        pendingPrompt: session.pendingPrompt,
+        diagnosisCode: session.diagnosisCode,
+        diagnosisName: session.diagnosisName,
+        createdAt: new Date().toISOString(),
+        detectedProvider: inputProvider,
+      });
+      return { text: `I saved your key but it's not working — ${verification.error}\n\nPlease double-check that you copied the correct key. Paste the right key here to try again.` };
+    }
+  }
+
+  const guide = getUserGuide(session.diagnosisCode, session.detectedProvider);
+
+  // Req 1b: Detect ambiguous user responses — re-send instructions
+  if (isAmbiguousResponse(userInput) && !isAffirmativeResponse(userInput)) {
+    return {
+      text: `It sounds like you still need help. Here are the instructions again:\n\n${guide}\n\nReply with \`/clinic done\` when you've completed the steps.`,
+    };
+  }
+
+  // Req 1b: Only advance when user gives affirmative response or re-test passes
+  // For non-affirmative, non-ambiguous input, still try re-verification
+  const isAffirmative = isAffirmativeResponse(userInput);
+
+  // Req 1a: Re-verify before claiming "Fixed"
+  const verification = await reVerify(session.diagnosisCode, api.config);
+
+  if (!verification.passed) {
+    // Re-test failed — do NOT advance. Keep session paused.
+    // Re-save session to keep it alive
+    await saveSession({
+      sessionId: session.sessionId,
+      pendingStepId: session.pendingStepId,
+      pendingPrompt: session.pendingPrompt,
+      diagnosisCode: session.diagnosisCode,
+      diagnosisName: session.diagnosisName,
+      createdAt: session.createdAt,
+      detectedProvider: session.detectedProvider,
+    });
+
+    const keyLengthHint = buildKeyLengthHint(session.diagnosisCode, api.config);
+
+    return {
+      text: `**${session.diagnosisName}** — still failing.\n\n${verification.error}${keyLengthHint}\n\nPlease try again:\n\n${guide}`,
+    };
+  }
+
+  // Re-test passed — advance
+  if (!isAffirmative && verification.checkDescription === "general check") {
+    // No re-verification available and user didn't say affirmative — re-send guide
+    return {
+      text: `Please complete the steps and reply with \`/clinic done\`:\n\n${guide}`,
+    };
+  }
+
+  try {
+    const response = await client.treat(session.sessionId, session.pendingStepId, {
+      success: true,
+      data: { userInput },
+    });
+
+    if (response.status === "resolved") {
+      await clearSession();
+      return { text: `**${session.diagnosisName}** — Fixed — verified that ${verification.checkDescription} is now passing.` };
+    }
+
+    if (response.status === "next" && response.nextStep) {
+      // Auto-continue remaining non-interactive steps
+      const notifier = new ClinicNotifier(api, { mode: "tool" });
+      const loopResult = await runTreatmentLoop({
+        client,
+        sessionId: session.sessionId,
+        treatmentPlan: [response.nextStep],
+        notifier,
+        config: api.config,
+      });
+
+      if (loopResult.status === "paused_for_input" && loopResult.pendingStep) {
+        await saveSession({
+          sessionId: session.sessionId,
+          pendingStepId: loopResult.pendingStep.id,
+          pendingPrompt: loopResult.pendingStep.inputPrompt || loopResult.pendingStep.description,
+          diagnosisCode: session.diagnosisCode,
+          diagnosisName: session.diagnosisName,
+          createdAt: new Date().toISOString(),
+          detectedProvider: session.detectedProvider,
+        });
+        const nextGuide = getUserGuide(session.diagnosisCode, session.detectedProvider);
+        return { text: nextGuide + "\n\nReply with `/clinic <your response>` to continue." };
+      }
+
+      if (loopResult.status === "resolved") {
+        await clearSession();
+        return { text: `**${session.diagnosisName}** — Fixed — verified that ${verification.checkDescription} is now passing.` };
+      }
+
+      await clearSession();
+      return { text: `Treatment ${loopResult.status}: ${loopResult.message}` };
+    }
+
+    if (response.status === "failed") {
+      await clearSession();
+      return { text: `Treatment failed: ${response.message}` };
+    }
+
+    await clearSession();
+    return { text: response.message };
+  } catch (err) {
+    await clearSession();
+    const msg = err instanceof Error ? err.message : String(err);
+    return { text: `Error resuming treatment: ${msg}` };
+  }
+}
+
+// ─── Helpers ────────────────────────────────────────────────────
+
+/** Build key-length hint if the diagnosis is about key format. */
+function buildKeyLengthHint(diagnosisCode: string, config: Record<string, unknown>): string {
+  if (diagnosisCode !== "CFG.1.1") return "";
+  const apiKey = extractApiKey(config);
+  if (!apiKey) return "";
+  const provider = detectProvider(apiKey);
+  return "\n\n" + getKeyLengthGuide(apiKey.length, provider);
+}
+
+// ─── Formatting helpers ─────────────────────────────────────────
+
+interface DiagnosisDetail {
+  icd_ai_code: string;
+  name: string;
+  confidence: number;
+  severity: string;
+  reasoning: string;
+}
+
+interface LoopResult {
+  status: string;
+  stepsCompleted: number;
+  stepsTotal: number;
+  message: string;
+  pendingStep?: { id: string; description: string; inputPrompt?: string };
+}
+
+function formatResult(d: DiagnosisDetail, loop: LoopResult, detectedProvider?: string): string {
+  const lines: string[] = [];
+  lines.push(`**${d.name}**`);
+
+  if (loop.status === "resolved") {
+    lines.push("");
+    lines.push(`Fixed — ${loop.message}`);
+  } else if (loop.status === "paused_for_input" && loop.pendingStep) {
+    lines.push("");
+    lines.push(humanizeReasoning(d.reasoning));
+    lines.push("");
+    // Use user guide instead of raw prescription text
+    const guide = getUserGuide(d.icd_ai_code, detectedProvider);
+    lines.push(guide);
+    lines.push("");
+    lines.push("Reply with `/clinic done` when you've completed the steps, or `/clinic help` to see these instructions again.");
+  } else if (loop.status === "failed") {
+    lines.push("");
+    lines.push(`Treatment failed: ${loop.message}`);
+  } else {
+    lines.push("");
+    lines.push(loop.message);
+  }
+
+  return lines.join("\n");
+}
+
+function formatDiagnosisOnly(d: DiagnosisDetail): string {
+  return `**${d.name}**\n\n${humanizeReasoning(d.reasoning)}`;
+}
+
+/** Strip raw JSON / HTTP details from reasoning, keep the human-readable part. */
+function humanizeReasoning(reasoning: string): string {
+  let clean = reasoning.replace(/\{[^}]{20,}\}/g, "").trim();
+  clean = clean.replace(/\s*Details:.*$/i, "").trim();
+  clean = clean.replace(/\.\s*$/, ".");
+  return clean || reasoning;
+}
+
+function formatLocalAuthIssue(conn: ConnectivityEvidence | undefined): string | null {
+  if (!conn) return null;
+
+  const authFailed = conn.providers.filter((p) => p.authStatus === "failed");
+  const serverErrors = conn.providers.filter((p) => p.authStatus === "server_error");
+  const rateLimited = conn.providers.filter((p) => p.authStatus === "rate_limited");
+
+  if (authFailed.length === 0 && serverErrors.length === 0 && rateLimited.length === 0) {
+    return null;
+  }
+
+  const lines: string[] = [];
+
+  for (const p of authFailed) {
+    lines.push(`**Auth Failure** — ${p.name} rejected your API key (HTTP ${p.authStatusCode}).`);
+    lines.push("");
+    lines.push(getUserGuide("CFG.3.1", p.name));
+  }
+
+  for (const p of serverErrors) {
+    lines.push(`**Service Error** — ${p.name} returned a server error.`);
+    lines.push("");
+    lines.push("The provider may be experiencing an outage. Please try again later.");
+  }
+
+  for (const p of rateLimited) {
+    lines.push(`**Rate Limited** — ${p.name} is throttling requests (HTTP 429).`);
+    lines.push("");
+    lines.push("Please wait a few minutes and try again, or check your usage limits.");
+  }
+
+  return lines.join("\n");
 }

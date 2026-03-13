@@ -127,6 +127,8 @@ export interface CliCommand {
 
 export interface CommandContext {
   args: string;
+  /** Channel/conversation ID — available when invoked from a chat channel. */
+  channelId?: string;
 }
 
 export interface PluginApi {

@@ -52,15 +52,18 @@ export function createMinimalSymptomVector(symptomsText: string): SymptomVector 
   }
 
   // O.1.1 Tool Failure — push error_rate high, tool_success_rate low
-  if (lower.includes("tool fail") || lower.includes("tool error") || lower.includes("schema") || lower.includes("broken tool") || lower.includes("mismatch") || lower.includes("error") || lower.includes("fail")) {
+  // Use specific phrases to avoid false matches from generic "error"/"fail"
+  if (lower.includes("tool fail") || lower.includes("tool error") || lower.includes("schema") || lower.includes("broken tool") || lower.includes("tool calling") || lower.includes("tool broken")) {
     sv.error_rate = 0.5;
     sv.tool_success_rate = 0.3;
   }
 
-  // I.1.1 Prompt Injection — push error_rate up, context_utilization high
+  // I.1.1 Prompt Injection — text-only matching disease (no thresholds)
+  // Keep vector neutral so it doesn't accidentally match threshold-based diseases
+  // The supporting symptom text matching in matchDiseases will handle this
   if (lower.includes("inject") || lower.includes("hijack") || lower.includes("jailbreak") || lower.includes("prompt attack")) {
-    sv.error_rate = 0.25;
-    sv.context_utilization = 0.85;
+    // Intentionally minimal — I.1.1 has no vital_sign_thresholds
+    // Keep neutral vector to avoid matching E.1.1/N.2.1/O.1.1
   }
 
   // M.2.1 Deadlock — low token_velocity, low step_count
@@ -70,16 +73,40 @@ export function createMinimalSymptomVector(symptomsText: string): SymptomVector 
     sv.error_rate = 0.0;
   }
 
-  // P.1.1 Sycophancy — high tool_success_rate, but misleading
+  // P.1.1 Sycophancy — text-only matching disease (no thresholds)
+  // Keep vector neutral; supporting symptom text matching handles detection
   if (lower.includes("sycophant") || lower.includes("agrees with everything") || lower.includes("yes-man") || lower.includes("too agreeable") || lower.includes("never pushes back")) {
-    sv.tool_success_rate = 1.0;
-    sv.output_diversity_score = 0.2;
-    sv.error_rate = 0.0;
+    // Intentionally minimal — P.1.1 has no vital_sign_thresholds
+    // Keep neutral vector to avoid matching E.1.1 via low diversity
   }
 
-  // Slow/timeout
-  if (lower.includes("slow") || lower.includes("timeout") || lower.includes("latency")) {
-    sv.latency_p95_ms = 8000;
+  // C.2.1 Latency Arrhythmia — threshold is latency_p95 >= 30000
+  if (lower.includes("slow") || lower.includes("timeout") || lower.includes("latency") || lower.includes("takes forever") || lower.includes("waiting")) {
+    sv.latency_p95_ms = 35000;
+    sv.token_velocity = 300;
+  }
+
+  // D.1.1 Output Bloat — needs token_velocity >= 3000, diversity <= 0.4 (2/3 thresholds)
+  if (lower.includes("verbose") || lower.includes("bloat") || lower.includes("too long") || lower.includes("wordy") || lower.includes("rambl") || lower.includes("concise")) {
+    sv.token_velocity = 5000;
+    sv.output_diversity_score = 0.3;
+    sv.context_utilization = 0.75;
+  }
+
+  // Gateway / port / startup errors — these are config/infra issues
+  if (lower.includes("gateway") || lower.includes("port") || lower.includes("eaddrinuse") || lower.includes("bind") || lower.includes("startup") || lower.includes("start")) {
+    // Keep neutral vector — these should be caught by config evidence, not symptom matching
+  }
+
+  // Rate limiting — keep neutral, should be caught by connectivity evidence
+  if (lower.includes("429") || lower.includes("rate limit") || lower.includes("too many request")) {
+    // Keep neutral — CFG.3.1 via connectivity evidence handles this
+  }
+
+  // Bot / channel not responding
+  if (lower.includes("not respond") || lower.includes("no response") || lower.includes("bot offline") || lower.includes("doesn't respond") || lower.includes("channel")) {
+    sv.error_rate = 0.3;
+    sv.tool_success_rate = 0.4;
   }
 
   return sv;
