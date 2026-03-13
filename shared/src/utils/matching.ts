@@ -71,7 +71,7 @@ export function matchDiseases(
     if (additionalContext?.symptoms_text) {
       const symptomsLower = additionalContext.symptoms_text.toLowerCase();
       // Common words that appear in many disease descriptions but carry no diagnostic signal
-      const STOP_WORDS = new Set(["agent", "agents", "error", "errors", "using", "causes", "should", "about", "after", "before", "their", "other", "which", "where", "while", "these", "those", "being", "every", "would", "could"]);
+      const STOP_WORDS = new Set(["agent", "agents", "error", "errors", "using", "causes", "should", "about", "after", "before", "their", "other", "which", "where", "while", "these", "those", "being", "every", "would", "could", "output", "input", "result", "results", "rather", "without", "content", "current", "follow", "action", "actions", "information", "related", "changes", "reading", "processing"]);
       for (const symptom of criteria.supporting_symptoms) {
         const words = symptom.toLowerCase().split(/\s+/).filter(w => w.length > 4 && !STOP_WORDS.has(w));
         const matched = words.some(word => symptomsLower.includes(word));
@@ -88,7 +88,7 @@ export function matchDiseases(
     const matchedExclusions: string[] = [];
     if (additionalContext?.symptoms_text) {
       const symptomsLower = additionalContext.symptoms_text.toLowerCase();
-      const STOP_WORDS = new Set(["agent", "agents", "error", "errors", "using", "causes", "should", "about", "after", "before", "their", "other", "which", "where", "while", "these", "those", "being", "every", "would", "could"]);
+      const STOP_WORDS = new Set(["agent", "agents", "error", "errors", "using", "causes", "should", "about", "after", "before", "their", "other", "which", "where", "while", "these", "those", "being", "every", "would", "could", "output", "input", "result", "results", "rather", "without", "content", "current", "follow", "action", "actions", "information", "related", "changes", "reading", "processing"]);
       for (const exclusion of criteria.exclusion_criteria) {
         const words = exclusion.toLowerCase().split(/\s+/).filter(w => w.length > 4 && !STOP_WORDS.has(w));
         const matched = words.some(word => symptomsLower.includes(word));
