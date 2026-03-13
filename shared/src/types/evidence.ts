@@ -27,6 +27,10 @@ export interface ConnectivityEvidence {
     latencyMs?: number;
     statusCode?: number;
     error?: string;
+    /** Result of actual API auth test (not just HEAD ping). */
+    authStatus?: "ok" | "failed" | "rate_limited" | "server_error" | "untested";
+    authError?: string;
+    authStatusCode?: number;
   }>;
   gatewayReachable?: boolean;
   gatewayLatencyMs?: number;

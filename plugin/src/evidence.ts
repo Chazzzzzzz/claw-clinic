@@ -291,6 +291,38 @@ export async function collectLogEvidence(maxLines = 200): Promise<LogEvidence> {
   return evidence;
 }
 
+/** Known auth test endpoints for providers. */
+const PROVIDER_AUTH_ENDPOINTS: Record<string, string> = {
+  anthropic: "https://api.anthropic.com/v1/messages",
+  openai: "https://api.openai.com/v1/models",
+};
+
+/** Build auth headers for a provider. */
+function buildAuthHeaders(providerName: string, apiKey: string): Record<string, string> {
+  if (providerName.startsWith("anthropic")) {
+    return {
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "content-type": "application/json",
+    };
+  }
+  // Default: Bearer token (OpenAI and most others)
+  return {
+    "authorization": `Bearer ${apiKey}`,
+    "content-type": "application/json",
+  };
+}
+
+/** Classify auth test HTTP status. */
+function classifyAuthStatus(status: number): "ok" | "failed" | "rate_limited" | "server_error" {
+  if (status >= 200 && status < 300) return "ok";
+  if (status === 400) return "ok"; // Bad request means auth passed but payload invalid — that's fine
+  if (status === 401 || status === 403) return "failed";
+  if (status === 429) return "rate_limited";
+  if (status >= 500) return "server_error";
+  return "ok"; // 3xx, other 4xx — auth likely passed
+}
+
 /** Test connectivity to known AI provider endpoints. */
 export async function collectConnectivityEvidence(config: Record<string, unknown>): Promise<ConnectivityEvidence> {
   const evidence: ConnectivityEvidence = {
@@ -301,10 +333,26 @@ export async function collectConnectivityEvidence(config: Record<string, unknown
   // Build list of providers to test from config + known defaults
   const providersToTest = getProvidersFromConfig(config);
 
-  // Test each provider in parallel
+  // Resolve API keys: try config providers first, then auth-profiles
+  let authProfileKey: string | undefined;
+  try {
+    authProfileKey = await extractApiKeyFromAuthProfiles();
+  } catch {
+    // ignore
+  }
+
+  // Test each provider in parallel: reachability + auth
   const results = await Promise.allSettled(
     providersToTest.map(async (provider) => {
       const start = Date.now();
+      let reachable = false;
+      let statusCode: number | undefined;
+      let error: string | undefined;
+      let authStatus: "ok" | "failed" | "rate_limited" | "server_error" | "untested" = "untested";
+      let authError: string | undefined;
+      let authStatusCode: number | undefined;
+
+      // Step 1: Basic reachability (HEAD)
       try {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 10_000);
@@ -313,22 +361,59 @@ export async function collectConnectivityEvidence(config: Record<string, unknown
           signal: controller.signal,
         });
         clearTimeout(timeout);
-        return {
-          name: provider.name,
-          endpoint: provider.healthEndpoint,
-          reachable: res.status < 500,
-          latencyMs: Date.now() - start,
-          statusCode: res.status,
-        };
+        reachable = res.status < 500;
+        statusCode = res.status;
       } catch (err) {
-        return {
-          name: provider.name,
-          endpoint: provider.healthEndpoint,
-          reachable: false,
-          latencyMs: Date.now() - start,
-          error: err instanceof Error ? err.message : String(err),
-        };
+        error = err instanceof Error ? err.message : String(err);
       }
+
+      // Step 2: Actual auth test (if reachable and we have a key)
+      // Only use authProfileKey as fallback if it matches this provider
+      let apiKey = provider.apiKey;
+      if (!apiKey && authProfileKey) {
+        const keyProvider = detectProvider(authProfileKey);
+        if (keyProvider === provider.name || keyProvider?.startsWith(provider.name)) {
+          apiKey = authProfileKey;
+        }
+      }
+      if (reachable && apiKey && provider.authTestEndpoint) {
+        try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 10_000);
+          // Send minimal request to auth endpoint — we expect 400 (bad body) if auth passes
+          const res = await fetch(provider.authTestEndpoint, {
+            method: "POST",
+            headers: buildAuthHeaders(provider.name, apiKey),
+            body: JSON.stringify({}),
+            signal: controller.signal,
+          });
+          clearTimeout(timeout);
+          authStatusCode = res.status;
+          authStatus = classifyAuthStatus(res.status);
+          if (authStatus === "failed" || authStatus === "server_error") {
+            try {
+              authError = await res.text();
+            } catch {
+              authError = `HTTP ${res.status}`;
+            }
+          }
+        } catch (err) {
+          authStatus = "server_error";
+          authError = err instanceof Error ? err.message : String(err);
+        }
+      }
+
+      return {
+        name: provider.name,
+        endpoint: provider.healthEndpoint,
+        reachable,
+        latencyMs: Date.now() - start,
+        statusCode,
+        error,
+        authStatus,
+        authError,
+        authStatusCode,
+      };
     }),
   );
 
@@ -495,6 +580,8 @@ export function extractGatewayUrl(config: Record<string, unknown>): string | und
 interface ProviderTestTarget {
   name: string;
   healthEndpoint: string;
+  apiKey?: string;
+  authTestEndpoint?: string;
 }
 
 function getProvidersFromConfig(config: Record<string, unknown>): ProviderTestTarget[] {
@@ -508,9 +595,15 @@ function getProvidersFromConfig(config: Record<string, unknown>): ProviderTestTa
       if (val && typeof val === "object") {
         const nested = val as Record<string, unknown>;
         const baseUrl = (nested.baseUrl ?? nested.base_url) as string | undefined;
+        const apiKey = (nested.apiKey ?? nested.api_key ?? nested.token) as string | undefined;
         if (baseUrl && !seen.has(name)) {
           seen.add(name);
-          targets.push({ name, healthEndpoint: baseUrl });
+          targets.push({
+            name,
+            healthEndpoint: baseUrl,
+            apiKey,
+            authTestEndpoint: PROVIDER_AUTH_ENDPOINTS[name] || `${baseUrl}/v1/messages`,
+          });
         }
       }
     }
@@ -518,8 +611,8 @@ function getProvidersFromConfig(config: Record<string, unknown>): ProviderTestTa
 
   // Always test known defaults if not already covered
   const defaults: ProviderTestTarget[] = [
-    { name: "anthropic", healthEndpoint: "https://api.anthropic.com" },
-    { name: "openai", healthEndpoint: "https://api.openai.com" },
+    { name: "anthropic", healthEndpoint: "https://api.anthropic.com", authTestEndpoint: "https://api.anthropic.com/v1/messages" },
+    { name: "openai", healthEndpoint: "https://api.openai.com", authTestEndpoint: "https://api.openai.com/v1/models" },
   ];
 
   for (const d of defaults) {

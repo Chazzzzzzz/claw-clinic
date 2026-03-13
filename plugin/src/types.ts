@@ -29,6 +29,9 @@ export interface ConnectivityEvidence {
     latencyMs?: number;
     statusCode?: number;
     error?: string;
+    authStatus?: "ok" | "failed" | "rate_limited" | "server_error" | "untested";
+    authError?: string;
+    authStatusCode?: number;
   }>;
   gatewayReachable?: boolean;
   gatewayLatencyMs?: number;

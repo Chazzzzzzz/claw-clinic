@@ -212,6 +212,73 @@ diagnoseRouter.post("/diagnose", async (c) => {
         });
       }
 
+      // Check auth failures from actual API test
+      const authFailed = conn.providers.filter((p) => p.authStatus === "failed");
+      if (authFailed.length > 0) {
+        const names = authFailed.map((p) => p.name).join(", ");
+        const errors = authFailed.map((p) => `${p.name}: ${p.authError || "auth rejected"} (HTTP ${p.authStatusCode})`).join("; ");
+        const treatmentPlan = buildTreatmentPlan("CFG.3.1");
+        if (treatmentPlan.length > 0) {
+          createSession(sessionId, "CFG.3.1", treatmentPlan);
+        }
+        return c.json({
+          sessionId,
+          diagnosis: {
+            icd_ai_code: "CFG.3.1",
+            name: "Auth Failure",
+            confidence: 0.95,
+            severity: "Critical",
+            reasoning: `API authentication failed for provider(s): ${names}. The API key may be expired, revoked, or invalid. Details: ${errors}`,
+          },
+          differential: [],
+          treatmentPlan,
+          summary: `Auth failure for: ${names}.`,
+        });
+      }
+
+      // Check server errors from auth test
+      const serverErrors = conn.providers.filter((p) => p.authStatus === "server_error");
+      if (serverErrors.length > 0) {
+        const names = serverErrors.map((p) => p.name).join(", ");
+        const errors = serverErrors.map((p) => `${p.name}: ${p.authError || "server error"}`).join("; ");
+        const treatmentPlan = buildTreatmentPlan("CFG.2.1");
+        if (treatmentPlan.length > 0) {
+          createSession(sessionId, "CFG.2.1", treatmentPlan);
+        }
+        return c.json({
+          sessionId,
+          diagnosis: {
+            icd_ai_code: "CFG.2.1",
+            name: "AI Provider Service Error",
+            confidence: 0.85,
+            severity: "High",
+            reasoning: `AI provider(s) returned server errors during auth test: ${names}. The service may be experiencing an outage. Details: ${errors}`,
+          },
+          differential: [],
+          treatmentPlan,
+          summary: `Provider service error: ${names}.`,
+        });
+      }
+
+      // Check rate limiting
+      const rateLimited = conn.providers.filter((p) => p.authStatus === "rate_limited");
+      if (rateLimited.length > 0) {
+        const names = rateLimited.map((p) => p.name).join(", ");
+        return c.json({
+          sessionId,
+          diagnosis: {
+            icd_ai_code: "CFG.3.1",
+            name: "Rate Limited",
+            confidence: 0.8,
+            severity: "Moderate",
+            reasoning: `API rate limit hit for provider(s): ${names}. Authentication is valid but requests are being throttled. Wait and retry, or check your usage limits.`,
+          },
+          differential: [],
+          treatmentPlan: [],
+          summary: `Rate limited by: ${names}.`,
+        });
+      }
+
       if (conn.gatewayReachable === false) {
         return c.json({
           sessionId,
