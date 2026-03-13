@@ -70,8 +70,10 @@ export function matchDiseases(
     const matchedSupporting: string[] = [];
     if (additionalContext?.symptoms_text) {
       const symptomsLower = additionalContext.symptoms_text.toLowerCase();
+      // Common words that appear in many disease descriptions but carry no diagnostic signal
+      const STOP_WORDS = new Set(["agent", "agents", "error", "errors", "using", "causes", "should", "about", "after", "before", "their", "other", "which", "where", "while", "these", "those", "being", "every", "would", "could"]);
       for (const symptom of criteria.supporting_symptoms) {
-        const words = symptom.toLowerCase().split(/\s+/).filter(w => w.length > 4);
+        const words = symptom.toLowerCase().split(/\s+/).filter(w => w.length > 4 && !STOP_WORDS.has(w));
         const matched = words.some(word => symptomsLower.includes(word));
         if (matched) {
           supportingBonus += 0.05;
@@ -86,8 +88,9 @@ export function matchDiseases(
     const matchedExclusions: string[] = [];
     if (additionalContext?.symptoms_text) {
       const symptomsLower = additionalContext.symptoms_text.toLowerCase();
+      const STOP_WORDS = new Set(["agent", "agents", "error", "errors", "using", "causes", "should", "about", "after", "before", "their", "other", "which", "where", "while", "these", "those", "being", "every", "would", "could"]);
       for (const exclusion of criteria.exclusion_criteria) {
-        const words = exclusion.toLowerCase().split(/\s+/).filter(w => w.length > 4);
+        const words = exclusion.toLowerCase().split(/\s+/).filter(w => w.length > 4 && !STOP_WORDS.has(w));
         const matched = words.some(word => symptomsLower.includes(word));
         if (matched) {
           exclusionPenalty += 0.3;
