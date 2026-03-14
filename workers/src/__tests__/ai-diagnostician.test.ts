@@ -78,7 +78,7 @@ describe("aiDiagnose", () => {
     // Verify the API was called with correct params
     expect(mockCreate).toHaveBeenCalledOnce();
     const callArgs = mockCreate.mock.calls[0][0];
-    expect(callArgs.model).toContain("sonnet");
+    expect(callArgs.model).toContain("opus");
     expect(callArgs.tools).toHaveLength(1);
     expect(callArgs.tools[0].name).toBe("submit_diagnosis");
     expect(callArgs.tool_choice).toEqual({ type: "tool", name: "submit_diagnosis" });
