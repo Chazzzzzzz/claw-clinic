@@ -483,7 +483,7 @@ describeAI("Channel Integration Issues", () => {
       ],
     });
     // Communication/handoff or tool calling issue
-    expectDiagnosis(json, ["M.1.1", "O.1.1", "CFG.2.1", "O.2.1", "CFG.4.1", "I.1.2"]);
+    expectDiagnosis(json, ["M.1.1", "O.1.1", "CFG.2.1", "O.2.1", "CFG.4.1", "I.1.2", "Telegram.1.1"], { hasTreatment: false });
   }, 30_000);
 
   it("5b. WhatsApp session corruption — random disconnects", async () => {
