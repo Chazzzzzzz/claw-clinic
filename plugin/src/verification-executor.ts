@@ -1,5 +1,6 @@
 import { access } from "node:fs/promises";
 import { collectConnectivityEvidence } from "./evidence.js";
+import type { VerificationConfidence } from "@claw-clinic/shared";
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -9,11 +10,13 @@ export interface VerificationStep {
   target?: string;
   expect?: string;
   pattern?: string;
+  confidence?: VerificationConfidence;
 }
 
 export interface VerificationStepResult {
   step: VerificationStep;
   passed: boolean;
+  confidence?: VerificationConfidence;
   detail?: string;
   error?: string;
 }
@@ -27,13 +30,13 @@ export interface VerificationPlanResult {
 
 async function checkFile(step: VerificationStep): Promise<VerificationStepResult> {
   if (!step.target) {
-    return { step, passed: false, error: "No target file path specified" };
+    return { step, passed: false, confidence: step.confidence, error: "No target file path specified" };
   }
   try {
     await access(step.target);
-    return { step, passed: true, detail: `File exists: ${step.target}` };
+    return { step, passed: true, confidence: step.confidence, detail: `File exists: ${step.target}` };
   } catch {
-    return { step, passed: false, error: `File not found: ${step.target}` };
+    return { step, passed: false, confidence: step.confidence, error: `File not found: ${step.target}` };
   }
 }
 
@@ -43,62 +46,62 @@ async function checkConnectivity(step: VerificationStep, config: Record<string, 
     if (step.target) {
       const provider = conn.providers.find((p) => p.name === step.target);
       if (!provider) {
-        return { step, passed: false, error: `Provider "${step.target}" not found in connectivity results` };
+        return { step, passed: false, confidence: step.confidence, error: `Provider "${step.target}" not found in connectivity results` };
       }
       if (!provider.reachable) {
-        return { step, passed: false, error: `Provider "${step.target}" is unreachable: ${provider.error || "unknown"}` };
+        return { step, passed: false, confidence: step.confidence, error: `Provider "${step.target}" is unreachable: ${provider.error || "unknown"}` };
       }
       if (provider.authStatus === "failed") {
-        return { step, passed: false, error: `Provider "${step.target}" auth failed (HTTP ${provider.authStatusCode})` };
+        return { step, passed: false, confidence: step.confidence, error: `Provider "${step.target}" auth failed (HTTP ${provider.authStatusCode})` };
       }
-      return { step, passed: true, detail: `Provider "${step.target}" is reachable and auth is ${provider.authStatus || "ok"}` };
+      return { step, passed: true, confidence: step.confidence, detail: `Provider "${step.target}" is reachable and auth is ${provider.authStatus || "ok"}` };
     }
     // No specific target — check all providers
     const unreachable = conn.providers.filter((p) => !p.reachable);
     if (unreachable.length > 0) {
-      return { step, passed: false, error: `Unreachable: ${unreachable.map((p) => p.name).join(", ")}` };
+      return { step, passed: false, confidence: step.confidence, error: `Unreachable: ${unreachable.map((p) => p.name).join(", ")}` };
     }
-    return { step, passed: true, detail: "All providers reachable" };
+    return { step, passed: true, confidence: step.confidence, detail: "All providers reachable" };
   } catch (err) {
-    return { step, passed: false, error: `Connectivity check failed: ${err instanceof Error ? err.message : String(err)}` };
+    return { step, passed: false, confidence: step.confidence, error: `Connectivity check failed: ${err instanceof Error ? err.message : String(err)}` };
   }
 }
 
 function checkConfig(step: VerificationStep, config: Record<string, unknown>): VerificationStepResult {
   if (!step.target) {
-    return { step, passed: false, error: "No target config key specified" };
+    return { step, passed: false, confidence: step.confidence, error: "No target config key specified" };
   }
 
   const value = config[step.target];
 
   if (step.expect === "present") {
     if (value !== undefined && value !== null && value !== "") {
-      return { step, passed: true, detail: `Config key "${step.target}" is present` };
+      return { step, passed: true, confidence: step.confidence, detail: `Config key "${step.target}" is present` };
     }
-    return { step, passed: false, error: `Config key "${step.target}" is missing or empty` };
+    return { step, passed: false, confidence: step.confidence, error: `Config key "${step.target}" is missing or empty` };
   }
 
   if (step.expect === "absent") {
     if (value === undefined || value === null || value === "") {
-      return { step, passed: true, detail: `Config key "${step.target}" is absent as expected` };
+      return { step, passed: true, confidence: step.confidence, detail: `Config key "${step.target}" is absent as expected` };
     }
-    return { step, passed: false, error: `Config key "${step.target}" is present but expected absent` };
+    return { step, passed: false, confidence: step.confidence, error: `Config key "${step.target}" is present but expected absent` };
   }
 
   // Default: check if the value exists
   if (value !== undefined && value !== null) {
-    return { step, passed: true, detail: `Config key "${step.target}" exists` };
+    return { step, passed: true, confidence: step.confidence, detail: `Config key "${step.target}" exists` };
   }
-  return { step, passed: false, error: `Config key "${step.target}" not found` };
+  return { step, passed: false, confidence: step.confidence, error: `Config key "${step.target}" not found` };
 }
 
 function checkProcess(step: VerificationStep): VerificationStepResult {
   // Basic process check — verify current process is running (node)
   if (step.target === "node" || !step.target) {
-    return { step, passed: true, detail: "Node process is running" };
+    return { step, passed: true, confidence: step.confidence, detail: "Node process is running" };
   }
   // For other processes, we'd need platform-specific checks
-  return { step, passed: true, detail: `Process check for "${step.target}" — assumed running` };
+  return { step, passed: true, confidence: step.confidence, detail: `Process check for "${step.target}" — assumed running` };
 }
 
 function checkLogs(step: VerificationStep): VerificationStepResult {
@@ -107,14 +110,14 @@ function checkLogs(step: VerificationStep): VerificationStepResult {
   if (step.pattern && step.expect === "absent") {
     // We can't verify log contents here without file access, but the step
     // structure supports it. Return passed as we have no evidence of the pattern.
-    return { step, passed: true, detail: `No evidence of pattern "${step.pattern}" in current context` };
+    return { step, passed: true, confidence: step.confidence, detail: `No evidence of pattern "${step.pattern}" in current context` };
   }
-  return { step, passed: true, detail: "Log check completed" };
+  return { step, passed: true, confidence: step.confidence, detail: "Log check completed" };
 }
 
 function checkCustom(step: VerificationStep): VerificationStepResult {
   // Custom steps without specific logic pass by default
-  return { step, passed: true, detail: `Custom check: ${step.description}` };
+  return { step, passed: true, confidence: step.confidence, detail: `Custom check: ${step.description}` };
 }
 
 // ─── Public API ─────────────────────────────────────────────────
@@ -137,7 +140,7 @@ export async function executeVerificationStep(
     case "custom":
       return checkCustom(step);
     default:
-      return { step, passed: true, detail: `Unknown step type: ${(step as VerificationStep).type}` };
+      return { step, passed: true, confidence: step.confidence, detail: `Unknown step type: ${(step as VerificationStep).type}` };
   }
 }
 

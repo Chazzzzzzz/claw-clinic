@@ -9,6 +9,10 @@ importers:
   .: {}
 
   plugin:
+    dependencies:
+      '@claw-clinic/shared':
+        specifier: workspace:*
+        version: link:../shared
     devDependencies:
       typescript:
         specifier: ^5.5.0

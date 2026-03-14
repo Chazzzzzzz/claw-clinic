@@ -109,22 +109,14 @@ export interface TreatmentResponse {
   sessionId: string;
 }
 
-// ─── Verification Types ─────────────────────────────────────────
+// ─── Verification Types (re-exported from shared) ───────────────
 
-export interface VerificationStep {
-  id: string;
-  type: "check_file" | "check_connectivity" | "check_config" | "check_process" | "check_logs" | "custom";
-  description: string;
-  instruction: string;
-  params: Record<string, unknown>;
-  successCondition: string;
-}
-
-export interface VerificationPlanResponse {
-  diseaseCode: string;
-  diseaseName: string;
-  steps: VerificationStep[];
-}
+export type {
+  VerificationStep,
+  VerificationPlanResponse,
+  VerificationConfidence,
+  VerificationStepType,
+} from "@claw-clinic/shared";
 
 // ─── Plugin API Types (minimal OpenClaw plugin API surface) ─────
 
