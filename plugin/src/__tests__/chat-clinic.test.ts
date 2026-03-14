@@ -5,7 +5,6 @@ import type { PluginApi, CommandContext, DiagnosisResponse } from "../types.js";
 
 // ─── Mocks ───────────────────────────────────────────────────────
 
-// Mock evidence collection — we control what reVerify sees
 vi.mock("../evidence.js", () => ({
   collectAllEvidence: vi.fn().mockResolvedValue([]),
   collectConnectivityEvidence: vi.fn().mockResolvedValue({ providers: [] }),
@@ -20,7 +19,6 @@ vi.mock("../evidence.js", () => ({
   extractGatewayUrl: vi.fn().mockReturnValue(undefined),
 }));
 
-// Mock validation — prevent real network calls
 vi.mock("../validation.js", () => ({
   validateLocally: vi.fn().mockResolvedValue({
     openclawReachable: true,
@@ -29,24 +27,12 @@ vi.mock("../validation.js", () => ({
   }),
 }));
 
-// Mock session-store — prevent filesystem access
 vi.mock("../session-store.js", () => ({
   loadSession: vi.fn().mockResolvedValue(null),
   saveSession: vi.fn().mockResolvedValue(undefined),
   clearSession: vi.fn().mockResolvedValue(undefined),
 }));
 
-// Mock treatment-loop
-vi.mock("../treatment-loop.js", () => ({
-  runTreatmentLoop: vi.fn().mockResolvedValue({
-    status: "resolved",
-    stepsCompleted: 1,
-    stepsTotal: 1,
-    message: "Treatment completed successfully.",
-  }),
-}));
-
-// Mock notifier
 vi.mock("../notifier.js", () => ({
   ClinicNotifier: vi.fn().mockImplementation(() => ({
     status: vi.fn(),
@@ -58,7 +44,6 @@ vi.mock("../notifier.js", () => ({
   })),
 }));
 
-// Mock verification-executor
 vi.mock("../verification-executor.js", () => ({
   executeVerificationPlan: vi.fn().mockResolvedValue({ passed: true, results: [] }),
 }));
@@ -82,11 +67,9 @@ function createMockApi(config: Record<string, unknown> = {}): PluginApi {
 }
 
 function createMockClient(): ClawClinicClient {
-  const client = new ClawClinicClient("http://localhost:3000");
-  return client;
+  return new ClawClinicClient("http://localhost:3000");
 }
 
-/** Register the command and extract the handler function. */
 function getClinicHandler(api: PluginApi, client: ClawClinicClient) {
   registerClinicChatCommand(api, client);
   const registerCall = (api.registerCommand as ReturnType<typeof vi.fn>).mock.calls[0];
@@ -119,25 +102,12 @@ vi.stubGlobal("fetch", mockFetch);
 
 beforeEach(() => {
   vi.clearAllMocks();
-  // Default: fetch calls for gateway health check succeed
   mockFetch.mockResolvedValue({ ok: true, status: 200 });
 });
 
 describe("/clinic fresh diagnosis with checks and fixes", () => {
   it("shows compact output with checks and fixes when backend returns them", async () => {
     const diagnoseMock = vi.spyOn(ClawClinicClient.prototype, "diagnose");
-    const verifyMock = vi.spyOn(ClawClinicClient.prototype, "verify");
-    const { collectConnectivityEvidence } = await import("../evidence.js");
-
-    // Backend verify returns no steps (so reVerify falls through to connectivity fallback)
-    verifyMock.mockResolvedValueOnce({ diseaseCode: "CFG.3.1", diseaseName: "Auth Failure", steps: [] });
-
-    // Connectivity fallback: auth still failing (issue is active)
-    (collectConnectivityEvidence as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      providers: [
-        { name: "anthropic", endpoint: "https://api.anthropic.com", reachable: true, authStatus: "failed", authStatusCode: 401 },
-      ],
-    });
 
     diagnoseMock.mockResolvedValueOnce(makeDiagnosisResponse({
       diagnosis: {
@@ -156,7 +126,7 @@ describe("/clinic fresh diagnosis with checks and fixes", () => {
       ],
     }));
 
-    // Mock executeVerificationPlan for the checks
+    // Mock executeVerificationPlan for the checks — issue still active
     const { executeVerificationPlan } = await import("../verification-executor.js");
     (executeVerificationPlan as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       passed: false,
@@ -184,23 +154,11 @@ describe("/clinic fresh diagnosis with checks and fixes", () => {
     expect(result.text).toContain("Reply 1-2 to apply");
 
     diagnoseMock.mockRestore();
-    verifyMock.mockRestore();
   });
 
   it("saves fixes in session for later selection", async () => {
     const { saveSession } = await import("../session-store.js");
-    const { collectConnectivityEvidence } = await import("../evidence.js");
     const diagnoseMock = vi.spyOn(ClawClinicClient.prototype, "diagnose");
-    const verifyMock = vi.spyOn(ClawClinicClient.prototype, "verify");
-
-    verifyMock.mockResolvedValueOnce({ diseaseCode: "CFG.1.2", diseaseName: "API Key Missing", steps: [] });
-
-    // Connectivity fallback: issue still active
-    (collectConnectivityEvidence as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      providers: [
-        { name: "anthropic", endpoint: "https://api.anthropic.com", reachable: true, authStatus: "failed", authStatusCode: 401 },
-      ],
-    });
 
     diagnoseMock.mockResolvedValueOnce(makeDiagnosisResponse({
       fixes: [
@@ -222,7 +180,6 @@ describe("/clinic fresh diagnosis with checks and fixes", () => {
     );
 
     diagnoseMock.mockRestore();
-    verifyMock.mockRestore();
   });
 
   it("returns healthy when no diagnosis", async () => {
@@ -247,19 +204,8 @@ describe("/clinic fresh diagnosis with checks and fixes", () => {
     diagnoseMock.mockRestore();
   });
 
-  it("falls back to treatment loop when no checks/fixes", async () => {
-    const { collectConnectivityEvidence } = await import("../evidence.js");
+  it("shows diagnosis name and reasoning when no checks/fixes", async () => {
     const diagnoseMock = vi.spyOn(ClawClinicClient.prototype, "diagnose");
-    const verifyMock = vi.spyOn(ClawClinicClient.prototype, "verify");
-
-    verifyMock.mockResolvedValueOnce({ diseaseCode: "E.1.1", diseaseName: "Infinite Loop", steps: [] });
-
-    // Connectivity fallback: provider unreachable (issue still active)
-    (collectConnectivityEvidence as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      providers: [
-        { name: "anthropic", endpoint: "https://api.anthropic.com", reachable: false, error: "timeout" },
-      ],
-    });
 
     diagnoseMock.mockResolvedValueOnce(makeDiagnosisResponse({
       diagnosis: {
@@ -271,9 +217,7 @@ describe("/clinic fresh diagnosis with checks and fixes", () => {
       },
       checks: [],
       fixes: [],
-      treatmentPlan: [
-        { id: "step_1", action: "report", description: "Report loop", requiresUserInput: false },
-      ],
+      treatmentPlan: [],
     }));
 
     const api = createMockApi();
@@ -282,11 +226,36 @@ describe("/clinic fresh diagnosis with checks and fixes", () => {
 
     const result = await handler({ args: "" });
 
-    // Should use fallback treatment loop (runTreatmentLoop mock returns resolved)
-    expect(result.text).toMatch(/Fixed|Treatment/i);
+    expect(result.text).toContain("**Infinite Loop**");
+    expect(result.text).toContain("Agent stuck in a loop.");
 
     diagnoseMock.mockRestore();
-    verifyMock.mockRestore();
+  });
+
+  it("returns resolved when all checks pass and no symptoms reported", async () => {
+    const diagnoseMock = vi.spyOn(ClawClinicClient.prototype, "diagnose");
+    const { executeVerificationPlan } = await import("../verification-executor.js");
+
+    diagnoseMock.mockResolvedValueOnce(makeDiagnosisResponse({
+      checks: [
+        { type: "check_config", target: "apiKey", expect: "present", label: "API key present" },
+      ],
+    }));
+
+    (executeVerificationPlan as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      passed: true,
+      results: [{ step: { type: "check_config", description: "API key present" }, passed: true }],
+    });
+
+    const api = createMockApi();
+    const client = createMockClient();
+    const handler = getClinicHandler(api, client);
+
+    const result = await handler({ args: "" });
+
+    expect(result.text).toMatch(/resolved|no action/i);
+
+    diagnoseMock.mockRestore();
   });
 });
 
@@ -318,7 +287,6 @@ describe("/clinic follow-up with numeric fix selection", () => {
     expect(result.text).toContain("openclaw config set anthropic.apiKey KEY");
     expect(result.text).toContain("/clinic done");
 
-    // Should save session for re-verification
     expect(saveSession).toHaveBeenCalledWith(
       expect.objectContaining({
         pendingStepId: "awaiting_fix",
@@ -410,13 +378,9 @@ describe("/clinic follow-up with numeric fix selection", () => {
 });
 
 describe("/clinic done re-verification", () => {
-  it("clears session when re-verify passes on /clinic done", async () => {
+  it("clears session when connectivity check passes on /clinic done", async () => {
     const { loadSession, clearSession } = await import("../session-store.js");
     const { collectConnectivityEvidence } = await import("../evidence.js");
-    const verifyMock = vi.spyOn(ClawClinicClient.prototype, "verify");
-
-    // Backend verify returns no steps, so fallback connectivity check runs
-    verifyMock.mockResolvedValueOnce({ diseaseCode: "CFG.3.1", diseaseName: "Auth Failure", steps: [], });
 
     const pendingSession = {
       sessionId: "sess-1",
@@ -443,16 +407,11 @@ describe("/clinic done re-verification", () => {
     expect(result.text).toContain("Auth Failure");
     expect(result.text).toContain("Fixed");
     expect(clearSession).toHaveBeenCalled();
-
-    verifyMock.mockRestore();
   });
 
-  it("shows still-detected when re-verify fails on /clinic done", async () => {
+  it("shows still-detected when connectivity fails on /clinic done", async () => {
     const { loadSession } = await import("../session-store.js");
     const { collectConnectivityEvidence } = await import("../evidence.js");
-    const verifyMock = vi.spyOn(ClawClinicClient.prototype, "verify");
-
-    verifyMock.mockResolvedValueOnce({ diseaseCode: "CFG.3.1", diseaseName: "Auth Failure", steps: [], });
 
     const pendingSession = {
       sessionId: "sess-1",
@@ -478,20 +437,13 @@ describe("/clinic done re-verification", () => {
 
     expect(result.text).toContain("Auth Failure");
     expect(result.text).toContain("still detected");
-
-    verifyMock.mockRestore();
   });
 });
 
 describe("/clinic follow-up with pasted API key", () => {
-  it("accepts a valid pasted API key and verifies it", async () => {
+  it("accepts a valid pasted API key and verifies it locally", async () => {
     const { loadSession, clearSession } = await import("../session-store.js");
     const { detectProvider, validateKeyFormat, writeApiKeyToAuthProfiles, collectConnectivityEvidence } = await import("../evidence.js");
-    const verifyMock = vi.spyOn(ClawClinicClient.prototype, "verify");
-    const treatMock = vi.spyOn(ClawClinicClient.prototype, "treat");
-
-    verifyMock.mockResolvedValueOnce({ diseaseCode: "CFG.3.1", diseaseName: "Auth Failure", steps: [], });
-    treatMock.mockResolvedValueOnce({ status: "resolved", message: "Done", sessionId: "sess-1" });
 
     const pendingSession = {
       sessionId: "sess-1",
@@ -506,7 +458,7 @@ describe("/clinic follow-up with pasted API key", () => {
     (detectProvider as ReturnType<typeof vi.fn>).mockReturnValueOnce("anthropic");
     (validateKeyFormat as ReturnType<typeof vi.fn>).mockReturnValueOnce({ valid: true });
     (writeApiKeyToAuthProfiles as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ success: true });
-    // Re-verify connectivity passes
+    // Local connectivity check passes
     (collectConnectivityEvidence as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       providers: [{ name: "anthropic", endpoint: "https://api.anthropic.com", reachable: true, authStatus: "ok" }],
     });
@@ -520,62 +472,5 @@ describe("/clinic follow-up with pasted API key", () => {
     expect(result.text).toContain("working");
     expect(result.text).toContain("fixed");
     expect(clearSession).toHaveBeenCalled();
-
-    verifyMock.mockRestore();
-    treatMock.mockRestore();
-  });
-});
-
-describe("/clinic pre-verification", () => {
-  it("returns resolved when reVerify shows issue already fixed (no symptoms)", async () => {
-    const diagnoseMock = vi.spyOn(ClawClinicClient.prototype, "diagnose");
-    const verifyMock = vi.spyOn(ClawClinicClient.prototype, "verify");
-    const { executeVerificationPlan } = await import("../verification-executor.js");
-
-    // Backend verify returns steps that pass
-    verifyMock.mockResolvedValueOnce({
-      diseaseCode: "CFG.1.2",
-      diseaseName: "API Key Missing",
-      steps: [{ id: "v1", type: "check_config", description: "Check API key", instruction: "Verify key exists", confidence: "high" as const, params: { target: "apiKey", expect: "present" }, successCondition: "key present" }],
-    });
-
-    (executeVerificationPlan as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      passed: true,
-      results: [{ step: { type: "check_config", description: "Check API key" }, passed: true }],
-    });
-
-    diagnoseMock.mockResolvedValueOnce(makeDiagnosisResponse());
-
-    const api = createMockApi();
-    const client = createMockClient();
-    const handler = getClinicHandler(api, client);
-
-    const result = await handler({ args: "" });
-
-    expect(result.text).toMatch(/resolved|no action/i);
-
-    diagnoseMock.mockRestore();
-    verifyMock.mockRestore();
-  });
-
-  it("skips reVerify shortcut when backend returns no diagnosis", async () => {
-    const diagnoseMock = vi.spyOn(ClawClinicClient.prototype, "diagnose");
-
-    diagnoseMock.mockResolvedValueOnce(makeDiagnosisResponse({
-      diagnosis: null,
-      treatmentPlan: [],
-      checks: [],
-      fixes: [],
-    }));
-
-    const api = createMockApi();
-    const client = createMockClient();
-    const handler = getClinicHandler(api, client);
-
-    const result = await handler({ args: "" });
-
-    expect(result.text).toMatch(/healthy|no issues/i);
-
-    diagnoseMock.mockRestore();
   });
 });

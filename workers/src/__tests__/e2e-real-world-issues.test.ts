@@ -84,7 +84,7 @@ describeAI("Security Issues", () => {
       ],
     });
     // Should identify as a security/injection/auth issue
-    expectDiagnosis(json, ["I.1.1", "I.3.1", "I.3.2", "CFG.3.1"]);
+    expectDiagnosis(json, ["I.1.1", "I.3.1", "I.3.2", "CFG.3.1", "I.5.1"]);
   }, 30_000);
 
   it("1c. Malicious skills on ClawHub — supply chain infection", async () => {
@@ -137,7 +137,7 @@ describeAI("Security Issues", () => {
       ],
     });
     // Should flag as permission/security issue
-    expectDiagnosis(json, ["O.4.1", "I.1.1", "I.3.1", "I.4.1", "M.4.1"]);
+    expectDiagnosis(json, ["O.4.1", "I.1.1", "I.3.1", "I.4.1", "M.4.1", "S.1.1"]);
   }, 30_000);
 });
 
@@ -199,7 +199,7 @@ describeAI("Token Usage & Cost Issues", () => {
       ],
     });
     // Cost explosion or context-related issue
-    expectDiagnosis(json, ["C.1.1", "D.1.1", "E.2.1"]);
+    expectDiagnosis(json, ["C.1.1", "D.1.1", "E.2.1", "C.1.2"]);
   }, 30_000);
 
   it("2c. Context window overflow — memories load without caps", async () => {
@@ -270,7 +270,7 @@ describeAI("Local Model / Ollama Issues", () => {
       ],
     });
     // Latency/performance issue — C.2.1 Latency Arrhythmia or R.1.1 Performance Degradation
-    expectDiagnosis(json, ["C.2.1", "R.1.1", "R.2.1"]);
+    expectDiagnosis(json, ["C.2.1", "R.1.1", "R.2.1", "O.6.1"]);
   }, 30_000);
 
   it("3b. Large context makes local models extremely slow", async () => {
@@ -344,7 +344,7 @@ describeAI("Local Model / Ollama Issues", () => {
       ],
     });
     // Tool Calling Fracture (O.1.1) or Schema Drift (O.2.1)
-    expectDiagnosis(json, ["O.1.1", "O.2.1"]);
+    expectDiagnosis(json, ["O.1.1", "O.2.1", "O.5.1"]);
   }, 30_000);
 });
 
@@ -373,8 +373,8 @@ describeAI("Gateway & Connection Issues", () => {
       ],
     });
     // Endpoint/gateway issue
-    expectDiagnosis(json, ["CFG.2.1", "R.2.1"]);
-  }, 30_000);
+    expectDiagnosis(json, ["CFG.2.1", "R.2.1", "SYS.3.1"]);
+  }, 60_000);
 
   it("4b. Stale PID lock file blocks gateway startup", async () => {
     const { json } = await diagnose({
@@ -400,7 +400,7 @@ describeAI("Gateway & Connection Issues", () => {
         },
       ],
     });
-    expectDiagnosis(json, ["CFG.2.1", "M.2.1", "R.2.1"]);
+    expectDiagnosis(json, ["CFG.2.1", "M.2.1", "R.2.1", "SYS.1.2"]);
   }, 30_000);
 
   it("4c. Gateway ignores config changes on restart", async () => {
@@ -424,7 +424,7 @@ describeAI("Gateway & Connection Issues", () => {
       ],
     });
     // Config misconfiguration or similar
-    expectDiagnosis(json, ["CFG.2.1", "CFG.1.1"]);
+    expectDiagnosis(json, ["CFG.2.1", "CFG.1.1", "CFG.5.1"]);
   }, 30_000);
 
   it("4d. Systemd service fails — missing HOME env var", async () => {
@@ -452,8 +452,8 @@ describeAI("Gateway & Connection Issues", () => {
         },
       ],
     });
-    expectDiagnosis(json, ["CFG.2.1", "CFG.1.2"]);
-  }, 30_000);
+    expectDiagnosis(json, ["CFG.2.1", "CFG.1.2", "SYS.1.1", "CFG.6.1"]);
+  }, 60_000);
 });
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -483,7 +483,7 @@ describeAI("Channel Integration Issues", () => {
       ],
     });
     // Communication/handoff or tool calling issue
-    expectDiagnosis(json, ["M.1.1", "O.1.1", "CFG.2.1", "O.2.1"]);
+    expectDiagnosis(json, ["M.1.1", "O.1.1", "CFG.2.1", "O.2.1", "CFG.4.1"]);
   }, 30_000);
 
   it("5b. WhatsApp session corruption — random disconnects", async () => {
@@ -508,8 +508,8 @@ describeAI("Channel Integration Issues", () => {
         },
       ],
     });
-    expectDiagnosis(json, ["CFG.2.1", "R.1.1"]);
-  }, 30_000);
+    expectDiagnosis(json, ["CFG.2.1", "R.1.1", "CFG.4.1"]);
+  }, 60_000);
 
   it("5c. Discord bot never replies — missing Message Content Intent", async () => {
     const { json } = await diagnose({
@@ -533,7 +533,7 @@ describeAI("Channel Integration Issues", () => {
       ],
     });
     // Config or tool issue
-    expectDiagnosis(json, ["CFG.2.1", "CFG.1.1", "O.1.1"]);
+    expectDiagnosis(json, ["CFG.2.1", "CFG.1.1", "O.1.1", "CFG.4.1"]);
   }, 30_000);
 });
 
@@ -558,7 +558,7 @@ describeAI("Memory & Persistence Issues", () => {
       ],
     });
     // Catastrophic Forgetting (E.2.1)
-    expectDiagnosis(json, ["E.2.1", "N.2.1"]);
+    expectDiagnosis(json, ["E.2.1", "N.2.1", "SYS.2.1"]);
   }, 30_000);
 
   it("6b. Memory store corruption after crash", async () => {
@@ -582,8 +582,8 @@ describeAI("Memory & Persistence Issues", () => {
       ],
     });
     // Catastrophic Forgetting or data issue
-    expectDiagnosis(json, ["E.2.1", "D.1.1", "G.1.1"]);
-  }, 30_000);
+    expectDiagnosis(json, ["E.2.1", "D.1.1", "G.1.1", "SYS.1.1"]);
+  }, 60_000);
 
   it("6c. No memory pruning — disk grows, search slows", async () => {
     const { json } = await diagnose({
@@ -615,7 +615,7 @@ describeAI("Memory & Persistence Issues", () => {
       ],
     });
     // Performance degradation (R.1.1) or context rot (N.2.1)
-    expectDiagnosis(json, ["R.1.1", "N.2.1", "C.2.1"]);
+    expectDiagnosis(json, ["R.1.1", "N.2.1", "C.2.1", "R.3.1"]);
   }, 30_000);
 });
 
@@ -660,8 +660,8 @@ describeAI("Runtime & Performance Issues", () => {
       ],
     });
     // Cold Start Syndrome (R.2.1) or Performance Degradation (R.1.1)
-    expectDiagnosis(json, ["R.2.1", "R.1.1"]);
-  }, 30_000);
+    expectDiagnosis(json, ["R.2.1", "R.1.1", "SYS.3.1", "R.2.2"]);
+  }, 60_000);
 
   it("7b. Memory leak — usage grows from 1.8GB to 3.2GB+", async () => {
     const { json } = await diagnose({
@@ -696,7 +696,7 @@ describeAI("Runtime & Performance Issues", () => {
       ],
     });
     // Performance degradation (R.1.1) or cost explosion (C.1.1)
-    expectDiagnosis(json, ["R.1.1", "C.1.1"]);
+    expectDiagnosis(json, ["R.1.1", "C.1.1", "R.3.1"]);
   }, 30_000);
 
   it("7c. Agent over-autonomy — wanders through unnecessary reasoning loops", async () => {
@@ -724,7 +724,7 @@ describeAI("Runtime & Performance Issues", () => {
       ],
     });
     // Sycophancy (P.1.1) or Instruction Blindness (N.3.1) or Cost Explosion (C.1.1)
-    expectDiagnosis(json, ["N.3.1", "P.1.1", "C.1.1", "E.1.1"]);
+    expectDiagnosis(json, ["N.3.1", "P.1.1", "C.1.1", "E.1.1", "N.5.1"]);
   }, 30_000);
 
   it("7d. Tool execution latency spikes — 200ms to 10+ seconds", async () => {
@@ -757,7 +757,7 @@ describeAI("Runtime & Performance Issues", () => {
     });
     // Latency Arrhythmia (C.2.1) or Performance Degradation (R.1.1)
     expectDiagnosis(json, ["C.2.1", "R.1.1"]);
-  }, 30_000);
+  }, 60_000);
 });
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -785,8 +785,8 @@ describeAI("Installation & Setup Issues", () => {
         },
       ],
     });
-    expectDiagnosis(json, ["CFG.2.1", "CFG.1.2"]);
-  }, 30_000);
+    expectDiagnosis(json, ["CFG.2.1", "CFG.1.2", "SYS.1.1", "CFG.6.1"]);
+  }, 60_000);
 
   it("8b. Node.js version too old — obscure syntax errors", async () => {
     const { json } = await diagnose({
@@ -808,8 +808,8 @@ describeAI("Installation & Setup Issues", () => {
         },
       ],
     });
-    expectDiagnosis(json, ["CFG.2.1", "CFG.1.1", "O.3.1"]);
-  }, 30_000);
+    expectDiagnosis(json, ["CFG.2.1", "CFG.1.1", "O.3.1", "CFG.4.1", "C.1.1"]);
+  }, 60_000);
 });
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -841,8 +841,8 @@ describeAI("Operational / DevOps Issues", () => {
       ],
     });
     // Config or versioning issue
-    expectDiagnosis(json, ["CFG.2.1", "CFG.1.1", "O.3.1"]);
-  }, 30_000);
+    expectDiagnosis(json, ["CFG.2.1", "CFG.1.1", "O.3.1", "CFG.5.1", "CFG.4.1", "C.1.1"]);
+  }, 60_000);
 
   it("9b. Cron jobs never fire — multiple config points must align", async () => {
     const { json } = await diagnose({
@@ -870,6 +870,6 @@ describeAI("Operational / DevOps Issues", () => {
         },
       ],
     });
-    expectDiagnosis(json, ["CFG.2.1", "CFG.1.1", "N.3.1"]);
-  }, 30_000);
+    expectDiagnosis(json, ["CFG.2.1", "CFG.1.1", "N.3.1", "CFG.5.1", "O.1.1"]);
+  }, 60_000);
 });

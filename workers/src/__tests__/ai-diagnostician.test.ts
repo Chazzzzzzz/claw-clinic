@@ -86,7 +86,7 @@ describe("aiDiagnose", () => {
     // Verify the API was called with correct params
     expect(mockCreate).toHaveBeenCalledOnce();
     const callArgs = mockCreate.mock.calls[0][0];
-    expect(callArgs.model).toContain("opus");
+    expect(callArgs.model).toContain("sonnet");
     expect(callArgs.tools).toHaveLength(1);
     expect(callArgs.tools[0].name).toBe("submit_diagnosis");
     expect(callArgs.tool_choice).toEqual({ type: "tool", name: "submit_diagnosis" });
@@ -162,9 +162,9 @@ describe("_buildSystemPrompt", () => {
   it("includes disease catalog and prescriptions", () => {
     const prompt = _buildSystemPrompt();
     expect(prompt).toContain("E.1.1");
-    expect(prompt).toContain("Known Disease Catalog");
-    expect(prompt).toContain("Standard Prescriptions");
-    expect(prompt).toContain("submit_diagnosis");
+    expect(prompt).toContain("Disease Catalog");
+    expect(prompt).toContain("standard prescriptions");
+    expect(prompt).toContain("diagnose");
   });
 });
 
@@ -220,6 +220,6 @@ describe("_serializeEvidence", () => {
     ];
     const result = _serializeEvidence(evidence);
     expect(result).toContain("errors=3");
-    expect(result).toContain("toolCalls=8");
+    expect(result).toContain("tools=8");
   });
 });

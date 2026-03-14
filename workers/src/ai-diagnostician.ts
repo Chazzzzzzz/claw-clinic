@@ -20,32 +20,30 @@ export interface AIDiagnosisResult {
 const SUBMIT_DIAGNOSIS_TOOL: Anthropic.Tool = {
   name: "submit_diagnosis",
   description:
-    "Submit a structured diagnosis for the AI agent's issue. You MUST call this tool with your diagnosis.",
+    "Submit a structured diagnosis. You MUST call this tool.",
   input_schema: {
     type: "object" as const,
     properties: {
       icd_ai_code: {
         type: "string",
         description:
-          "The ICD-AI disease code from the catalog, or a new code if no existing disease matches.",
+          "ICD-AI code from catalog, or new Department.Number.Variant code.",
       },
       name: {
         type: "string",
-        description: "Human-readable disease name.",
+        description: "Disease name (2-5 words).",
       },
       confidence: {
         type: "number",
-        description: "Confidence score between 0 and 1.",
+        description: "0-1 confidence score.",
       },
       severity: {
         type: "string",
         enum: ["Low", "Moderate", "High", "Critical"],
-        description: "Severity of the diagnosed condition.",
       },
       reasoning: {
         type: "string",
-        description:
-          "Brief explanation of why this diagnosis was chosen, referencing the evidence.",
+        description: "1 sentence explaining the diagnosis.",
       },
       differential: {
         type: "array",
@@ -58,7 +56,7 @@ const SUBMIT_DIAGNOSIS_TOOL: Anthropic.Tool = {
           },
           required: ["icd_ai_code", "name", "confidence"],
         },
-        description: "Alternative diagnoses considered, ordered by confidence.",
+        description: "Top 2-3 alternative diagnoses.",
       },
       treatment_steps: {
         type: "array",
@@ -67,16 +65,11 @@ const SUBMIT_DIAGNOSIS_TOOL: Anthropic.Tool = {
           properties: {
             action: { type: "string" },
             description: { type: "string" },
-            requires_user_input: {
-              type: "boolean",
-              description:
-                "True if this step requires human action (e.g., changing a setting, approving a change, providing information). False if it can be verified or executed automatically.",
-            },
+            requires_user_input: { type: "boolean" },
           },
           required: ["action", "description", "requires_user_input"],
         },
-        description:
-          "Treatment steps if the disease code is NOT in the known catalog. REQUIRED for novel codes — include actionable steps the user can follow to resolve the issue.",
+        description: "ONLY for novel codes not in catalog. Max 3 steps.",
       },
       checks: {
         type: "array",
@@ -90,7 +83,7 @@ const SUBMIT_DIAGNOSIS_TOOL: Anthropic.Tool = {
           },
           required: ["type", "target", "expect", "label"],
         },
-        description: "2-5 checks for the plugin to run locally. Each check has a type (what to check), target (config key path, URL, file path, or process name), expect (expected good state like 'present', 'reachable', 'off', or a specific value), and label (human-readable like: sandbox.mode = \"off\").",
+        description: "2-4 local checks. Use exact config keys, file paths, URLs.",
       },
       fixes: {
         type: "array",
@@ -103,92 +96,87 @@ const SUBMIT_DIAGNOSIS_TOOL: Anthropic.Tool = {
           },
           required: ["label", "command", "description"],
         },
-        description: "2-3 concrete fix options. Each fix has a short label (under 40 chars), the exact terminal command to run (like 'openclaw config set sandbox.mode off'), and a 1-line description of what it does.",
+        description: "2-3 fix options with exact terminal commands.",
       },
     },
     required: ["icd_ai_code", "name", "confidence", "severity", "reasoning", "differential", "checks", "fixes"],
   },
 };
 
+// Cache the system prompt — disease catalog is static
+let _cachedSystemPrompt: string | undefined;
+
 function buildSystemPrompt(): string {
+  if (_cachedSystemPrompt) return _cachedSystemPrompt;
+
+  // Compact disease catalog: code, name, severity, top 3 symptoms
   const diseaseCatalog = MVP_DISEASES.map((d) => {
-    const thresholds = Object.entries(d.diagnostic_criteria.vital_sign_thresholds)
-      .map(([k, v]) => {
-        const parts: string[] = [];
-        if (v.min !== undefined) parts.push(`min=${v.min}`);
-        if (v.max !== undefined) parts.push(`max=${v.max}`);
-        return `${k}(${parts.join(",")})`;
-      })
-      .join(", ");
-    return `- ${d.icd_ai_code} "${d.name}" [${d.severity}]: ${d.description.slice(0, 150)}... Thresholds: ${thresholds}. Supporting: ${d.diagnostic_criteria.supporting_symptoms.slice(0, 3).join("; ")}`;
+    const symptoms = d.diagnostic_criteria.supporting_symptoms.slice(0, 3).join("; ");
+    return `${d.icd_ai_code} "${d.name}" [${d.severity}]: ${symptoms}`;
   }).join("\n");
 
-  const prescriptionSummary = STANDARD_PRESCRIPTIONS.map((p) => {
-    const stepSummary = p.steps.map((s) => s.change.slice(0, 80)).join(" | ");
-    return `- ${p.target_disease}: ${p.name} — ${stepSummary}`;
-  }).join("\n");
+  // Compact prescriptions: code → step count
+  const prescriptionCodes = STANDARD_PRESCRIPTIONS.map((p) =>
+    `${p.target_disease}(${p.steps.length} steps)`
+  ).join(", ");
 
-  return `You are an AI agent diagnostician for the Claw Clinic system. You diagnose issues with AI coding agents (like Claude Code, Cursor, Copilot, etc).
+  _cachedSystemPrompt = `You diagnose AI coding agent issues (Claude Code, Cursor, Copilot, etc).
 
-## Known Disease Catalog (ICD-AI codes)
+## Disease Catalog
 ${diseaseCatalog}
 
-## Standard Prescriptions (for known diseases)
-${prescriptionSummary}
+## Diseases with standard prescriptions
+${prescriptionCodes}
 
-## Instructions
-1. Analyze the evidence and symptoms provided.
-2. Match against known diseases first. Use the exact ICD-AI code if a known disease matches.
-3. If no known disease matches well, create a novel diagnosis with a descriptive code following the ICD-AI convention (Department.Number.Variant).
-4. Always provide differential diagnoses — other conditions that could explain the symptoms.
-5. Only include treatment_steps if the diagnosis uses a code NOT in the known catalog above. For novel codes, treatment_steps are REQUIRED — include actionable steps with requires_user_input set correctly.
-6. Call the submit_diagnosis tool with your structured diagnosis. Do NOT respond with plain text.
-7. Keep reasoning to exactly 1 sentence. No paragraphs.
-8. Always include checks — 2-5 things the plugin should verify locally. Use exact config key paths (e.g., "sandbox.mode"), file paths (e.g., "~/.openclaw/openclaw.json"), and endpoint URLs. The label should show what the check verifies in human-readable form.
-9. Always include fixes — 2-3 concrete fix options. Each MUST have a command field with the exact terminal command (prefer "openclaw config set ..." for config changes). Keep labels under 40 chars.
+## Rules
+1. Match known diseases first. Use exact ICD-AI code.
+2. Novel codes: use Department.Number.Variant format, include treatment_steps (max 3).
+3. reasoning: exactly 1 sentence.
+4. checks: 2-4 items with exact config key paths, file paths, or URLs.
+5. fixes: 2-3 options with exact terminal commands (prefer "openclaw config set ...").
+6. differential: top 2-3 alternatives only.
+7. Do NOT include treatment_steps for known catalog codes.
 
-## Diagnostic Discriminators
-- **Loop vs Hang**: An infinite loop (E.1.1) shows repeated tool calls with identical arguments (toolCallCount high, loopDetected=true). A hang shows a single call that never returns (toolCallCount=0, high latency, 0 tokens produced). Do not confuse waiting-for-response with looping.
-- **Cost vs Latency**: Cost Explosion (C.1.1) is about monetary spend (high totalCostUsd, high totalTokens). Latency Arrhythmia (C.2.1) is about response time (high avgLatencyMs) regardless of cost.
-- **Config vs Platform**: Config issues (CFG.*) are in the agent's own config files. Platform integration issues are about external platform settings (Discord intents, Telegram permissions, Node.js version requirements).`;
+## Key Distinctions
+- Loop (E.1.1): repeated identical tool calls. Hang: single call never returns.
+- Cost (C.1.1): high spend/tokens. Latency (C.2.1): slow response time.
+- Config (CFG.*): agent config files. Platform: external platform settings.`;
+
+  return _cachedSystemPrompt;
 }
 
 function serializeEvidence(evidence: Evidence[], symptoms?: string): string {
   const parts: string[] = [];
 
   if (symptoms) {
-    parts.push(`User-reported symptoms: "${symptoms}"`);
+    parts.push(`Symptoms: "${symptoms}"`);
   }
 
   for (const ev of evidence) {
     switch (ev.type) {
       case "config":
-        parts.push(`[Config] API key: ${ev.apiKey?.masked || "none"}, provider: ${ev.apiKey?.provider || "unknown"}, endpoint: ${ev.endpoint?.url || "default"}, reachable: ${ev.endpoint?.reachable ?? "unknown"}`);
-        if (ev.errorLogs?.length) parts.push(`  Error logs: ${ev.errorLogs.join("; ")}`);
+        parts.push(`[Config] key=${ev.apiKey?.masked || "none"} provider=${ev.apiKey?.provider || "?"} endpoint=${ev.endpoint?.url || "default"}`);
+        if (ev.errorLogs?.length) parts.push(`  Errors: ${ev.errorLogs.slice(0, 3).join("; ")}`);
         break;
       case "connectivity":
         for (const p of ev.providers) {
-          parts.push(`[Connectivity] ${p.name}: reachable=${p.reachable}, authStatus=${p.authStatus || "untested"}, latency=${p.latencyMs || "?"}ms`);
-          if (p.error) parts.push(`  Error: ${p.error}`);
-          if (p.authError) parts.push(`  Auth error: ${p.authError}`);
+          parts.push(`[Conn] ${p.name}: reachable=${p.reachable} auth=${p.authStatus || "?"} latency=${p.latencyMs || "?"}ms${p.authError ? ` err="${p.authError}"` : ""}`);
         }
-        if (ev.gatewayReachable !== undefined) parts.push(`[Gateway] reachable=${ev.gatewayReachable}`);
         break;
       case "behavior":
         parts.push(`[Behavior] ${ev.description}`);
-        if (ev.symptoms?.length) parts.push(`  Symptoms: ${ev.symptoms.join("; ")}`);
+        if (ev.symptoms?.length) parts.push(`  ${ev.symptoms.slice(0, 5).join("; ")}`);
         break;
       case "log":
-        if (ev.errorPatterns?.length) parts.push(`[Log errors] ${ev.errorPatterns.join("; ")}`);
-        if (ev.entries?.length) parts.push(`[Log entries] ${ev.entries.slice(0, 10).join("; ")}`);
+        if (ev.errorPatterns?.length) parts.push(`[Logs] ${ev.errorPatterns.slice(0, 5).join("; ")}`);
         break;
       case "environment":
-        parts.push(`[Environment] OS: ${ev.os || "?"}, Node: ${ev.nodeVersion || "?"}, OpenClaw: ${ev.openclawVersion || "?"}`);
+        parts.push(`[Env] OS=${ev.os || "?"} Node=${ev.nodeVersion || "?"} OpenClaw=${ev.openclawVersion || "?"}`);
         break;
       case "runtime":
         if (ev.recentTraceStats) {
           const s = ev.recentTraceStats;
-          parts.push(`[Runtime] steps=${s.totalSteps}, errors=${s.errorCount}, toolCalls=${s.toolCallCount}, toolSuccess=${s.toolSuccessCount}, loop=${s.loopDetected}, cost=$${s.totalCostUsd.toFixed(2)}`);
+          parts.push(`[Runtime] steps=${s.totalSteps} errors=${s.errorCount} tools=${s.toolCallCount}/${s.toolSuccessCount} loop=${s.loopDetected} cost=$${s.totalCostUsd.toFixed(2)} latency=${s.avgLatencyMs}ms`);
         }
         break;
     }
@@ -211,8 +199,8 @@ export async function aiDiagnose(
 
   try {
     const response = await client.messages.create({
-      model: "claude-opus-4-6",
-      max_tokens: 2048,
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 1024,
       system: buildSystemPrompt(),
       tools: [SUBMIT_DIAGNOSIS_TOOL],
       tool_choice: { type: "tool", name: "submit_diagnosis" },
