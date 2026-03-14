@@ -2134,4 +2134,288 @@ export const STANDARD_PRESCRIPTIONS: Prescription[] = [
     created_by: "system",
     created_at: "2026-03-14",
   },
+
+  // ─── RX-STD-039: Sandbox Enforcement Protocol (S.1.1) ─────────────
+  {
+    id: "RX-STD-039",
+    name: "Sandbox Enforcement Protocol",
+    version: "1.0.0",
+    target_disease: "S.1.1",
+    target_frameworks: ["all"],
+    type: "acute",
+    risk_level: "high",
+    auto_applicable: false,
+    steps: [
+      {
+        action: "config_suggestion",
+        target: "system_configuration",
+        change:
+          "Enable sandboxing immediately: (1) Set the framework's sandbox or restricted-mode flag to true (e.g., `dangerouslyDisableSandbox: false`, `sandbox: true`). (2) Restrict exec permissions to only the tools and commands the agent actually needs. (3) Use an allowlist approach rather than a denylist -- deny everything by default and explicitly permit specific commands.",
+        rationale:
+          "Sandboxing is the primary defense against destructive or malicious commands. An allowlist approach prevents novel attack vectors that a denylist would miss.",
+        reversible: true,
+      },
+      {
+        action: "config_suggestion",
+        target: "system_configuration",
+        change:
+          "Add filesystem and network isolation: (1) Restrict the agent's working directory to a specific path and prevent traversal. (2) Mount sensitive directories as read-only. (3) If running in a container, drop all unnecessary capabilities (no NET_RAW, no SYS_ADMIN). (4) Implement network egress filtering to prevent data exfiltration.",
+        rationale:
+          "Defense in depth ensures that even if one layer is bypassed, the agent cannot cause widespread damage.",
+        reversible: true,
+      },
+      {
+        action: "instruction",
+        target: "verification",
+        change:
+          "Verify sandbox enforcement by attempting a known-dangerous operation (e.g., writing to /tmp/sandbox-test) and confirming it is blocked. Review the agent's tool permissions list and confirm it matches the minimum required set.",
+        rationale:
+          "Trust but verify -- sandbox configuration errors are common and a quick smoke test confirms the restrictions are active.",
+        reversible: true,
+      },
+    ],
+    dosage: {
+      parameters: { max_allowed_commands: 10 },
+      adjustments:
+        "For agents that need broad tool access (e.g., coding agents), use a curated allowlist of safe commands rather than full restriction. Monitor and audit tool usage regularly.",
+    },
+    side_effects: [
+      "Agent may fail on legitimate operations that are now blocked",
+      "Overly restrictive sandbox may require iterative tuning of the allowlist",
+      "Some frameworks do not support granular permission control",
+    ],
+    contraindications: [
+      "Development environments where unrestricted access is intentional and the agent runs locally",
+      "Agents that require privileged access by design (e.g., system administration agents)",
+    ],
+    efficacy: {
+      success_rate: 0.0,
+      sample_size: 0,
+      last_updated: "2026-03-14",
+      confidence_interval: "N/A",
+    },
+    created_by: "system",
+    created_at: "2026-03-14",
+  },
+
+  // ─── RX-STD-040: Proxy Deadlock Resolution (O.6.1) ────────────────
+  {
+    id: "RX-STD-040",
+    name: "Proxy Deadlock Resolution",
+    version: "1.0.0",
+    target_disease: "O.6.1",
+    target_frameworks: ["all"],
+    type: "acute",
+    risk_level: "medium",
+    auto_applicable: false,
+    steps: [
+      {
+        action: "instruction",
+        target: "diagnosis",
+        change:
+          "Identify the deadlock point: (1) Test the model directly by curling the local provider endpoint (e.g., `curl http://localhost:11434/api/generate`). (2) If the model responds directly but not through the gateway, the issue is in the proxy layer. (3) Check proxy logs for buffering or timeout errors. (4) Verify the proxy supports streaming/SSE pass-through if the model uses chunked responses.",
+        rationale:
+          "Confirming the model is healthy isolates the problem to the proxy layer and prevents wasted time debugging the wrong component.",
+        reversible: true,
+      },
+      {
+        action: "config_suggestion",
+        target: "system_configuration",
+        change:
+          "Fix the proxy configuration: (1) Enable streaming/chunked transfer encoding pass-through in the proxy (e.g., `proxy_buffering off` in nginx). (2) Increase proxy timeout to exceed the model's maximum inference time. (3) Ensure the proxy does not buffer the entire response before forwarding. (4) Set keep-alive timeouts to be longer than the model's response time.",
+        rationale:
+          "Most proxy deadlocks are caused by buffering or timeout mismatches. Disabling response buffering and extending timeouts resolves the majority of cases.",
+        reversible: true,
+      },
+    ],
+    dosage: {
+      parameters: { proxy_timeout_seconds: 300 },
+      adjustments:
+        "For large models with slow inference, increase the proxy timeout proportionally. For high-throughput setups, consider connection pooling between the proxy and the model server.",
+    },
+    side_effects: [
+      "Disabling proxy buffering increases memory usage under high concurrency",
+      "Very long timeouts may mask other issues where the model is genuinely stuck",
+    ],
+    contraindications: [
+      "The model itself is crashing or out of memory -- fix the model first",
+      "Proxy is required for security filtering and cannot be bypassed",
+    ],
+    efficacy: {
+      success_rate: 0.0,
+      sample_size: 0,
+      last_updated: "2026-03-14",
+      confidence_interval: "N/A",
+    },
+    created_by: "system",
+    created_at: "2026-03-14",
+  },
+
+  // ─── RX-STD-041: Config Schema Reconciliation (CFG.5.1) ───────────
+  {
+    id: "RX-STD-041",
+    name: "Config Schema Reconciliation",
+    version: "1.0.0",
+    target_disease: "CFG.5.1",
+    target_frameworks: ["all"],
+    type: "acute",
+    risk_level: "low",
+    auto_applicable: true,
+    steps: [
+      {
+        action: "instruction",
+        target: "agent_behavior",
+        change:
+          "Audit the current configuration against the framework's latest schema: (1) Compare each config key against the current version's documentation or schema definition. (2) Identify any keys that have been renamed, removed, or had their default values changed. (3) Check for deprecation warnings in framework logs that may indicate stale config keys.",
+        rationale:
+          "A systematic audit catches silent config changes that cause subtle failures. Many frameworks log deprecation warnings that are easy to miss.",
+        reversible: true,
+      },
+      {
+        action: "config_suggestion",
+        target: "system_configuration",
+        change:
+          "Update configuration to match the current schema: (1) Rename deprecated keys to their current equivalents. (2) Explicitly set any defaults that changed between versions rather than relying on implicit defaults. (3) Remove keys that no longer exist to prevent confusion. (4) Pin the framework version in your config or add a schema_version field to detect future mismatches.",
+        rationale:
+          "Explicit configuration is more resilient than relying on defaults, which can change without notice between versions.",
+        reversible: true,
+      },
+      {
+        action: "instruction",
+        target: "verification",
+        change:
+          "Verify the updated configuration by restarting the agent and confirming: (1) No deprecation or unknown-key warnings in logs. (2) Features that were silently disabled (cron, cache, persistence) are now functioning. (3) The agent's behavior matches expectations with the new config.",
+        rationale:
+          "Verification confirms the config changes resolved the issue and no additional mismatches remain.",
+        reversible: true,
+      },
+    ],
+    dosage: {
+      parameters: {},
+      adjustments:
+        "For teams managing multiple environments, create a config migration script that runs on framework upgrades to automatically map old keys to new ones.",
+    },
+    side_effects: [
+      "Changing defaults back to old behavior may conflict with new framework features",
+      "Removing unknown keys may break custom framework extensions that read them",
+    ],
+    contraindications: [
+      "Framework is at a stable version and config is known-good -- do not change what works",
+    ],
+    efficacy: {
+      success_rate: 0.0,
+      sample_size: 0,
+      last_updated: "2026-03-14",
+      confidence_interval: "N/A",
+    },
+    created_by: "system",
+    created_at: "2026-03-14",
+  },
+
+  // ─── RX-STD-042: Memory Persistence Restoration (SYS.2.1) ────────
+  {
+    id: "RX-STD-042",
+    name: "Memory Persistence Restoration",
+    version: "1.0.0",
+    target_disease: "SYS.2.1",
+    target_frameworks: ["all"],
+    type: "acute",
+    risk_level: "low",
+    auto_applicable: false,
+    steps: [
+      {
+        action: "config_suggestion",
+        target: "system_configuration",
+        change:
+          "Enable and verify memory persistence: (1) Check the framework's memory/persistence configuration and ensure flush-on-restart or ephemeral mode is disabled. (2) Verify the persistence directory exists, is writable, and is not on a tmpfs or ephemeral volume. (3) If running in a container, ensure the persistence directory is mounted as a persistent volume. (4) Remove any debug overrides that disable persistence.",
+        rationale:
+          "The most common cause is a configuration flag that enables memory flush, often set during development and never reverted. Fixing the config is the direct remedy.",
+        reversible: true,
+      },
+      {
+        action: "instruction",
+        target: "verification",
+        change:
+          "Verify persistence survives a restart: (1) Write a test memory entry (e.g., a unique marker string). (2) Restart the agent process. (3) Query for the marker string and confirm it was retained. (4) Check that the persistence file or database has a modification timestamp after the write.",
+        rationale:
+          "A write-restart-read test is the only reliable way to confirm persistence is actually working end-to-end.",
+        reversible: true,
+      },
+    ],
+    dosage: {
+      parameters: {},
+      adjustments:
+        "For agents with large memory stores, consider implementing memory compaction or summarization to prevent the persistence file from growing unbounded.",
+    },
+    side_effects: [
+      "Enabling persistence increases disk usage over time",
+      "Persisted memories may include outdated or incorrect information",
+    ],
+    contraindications: [
+      "Agents that are intentionally stateless for privacy or compliance reasons",
+      "Multi-tenant environments where memory isolation is not guaranteed",
+    ],
+    efficacy: {
+      success_rate: 0.0,
+      sample_size: 0,
+      last_updated: "2026-03-14",
+      confidence_interval: "N/A",
+    },
+    created_by: "system",
+    created_at: "2026-03-14",
+  },
+
+  // ─── RX-STD-043: Scope Containment Protocol (N.5.1) ───────────────
+  {
+    id: "RX-STD-043",
+    name: "Scope Containment Protocol",
+    version: "1.0.0",
+    target_disease: "N.5.1",
+    target_frameworks: ["all"],
+    type: "acute",
+    risk_level: "low",
+    auto_applicable: true,
+    steps: [
+      {
+        action: "instruction",
+        target: "agent_behavior",
+        change:
+          "SCOPE CHECK: You have been drifting beyond your original task. Stop and re-read the user's original request. (1) List only the specific actions the user asked for. (2) Compare that list to what you have done so far. (3) Abandon any in-progress work that was not explicitly requested. (4) If you believe additional work is genuinely needed, ASK the user before proceeding -- do not assume.",
+        rationale:
+          "A direct behavioral injection that forces the agent to re-evaluate its current trajectory against the original request. Most agents comply when explicitly told to check scope.",
+        reversible: true,
+      },
+      {
+        action: "config_suggestion",
+        target: "system_configuration",
+        change:
+          "Add scope guardrails to the agent configuration: (1) Set a reasonable max_iterations or max_tool_calls limit to cap runaway sessions. (2) Add a cost ceiling that pauses the agent and asks for confirmation before exceeding the budget. (3) Configure the system prompt to instruct the agent to confirm before expanding scope beyond the original request.",
+        rationale:
+          "Hard limits on iterations and cost provide a safety net that catches scope creep even when behavioral instructions are insufficient.",
+        reversible: true,
+      },
+    ],
+    dosage: {
+      parameters: { max_tool_calls: 20, cost_ceiling_usd: 2.0 },
+      adjustments:
+        "For complex multi-step tasks, increase limits proportionally. For simple tasks (questions, lookups), keep limits low to catch drift early.",
+    },
+    side_effects: [
+      "Agent may abandon genuinely useful related work",
+      "Strict limits may cause the agent to fail on legitimately complex tasks",
+      "Frequent confirmation prompts may slow down experienced users",
+    ],
+    contraindications: [
+      "Tasks where broad exploration is explicitly desired (e.g., research, brainstorming)",
+      "Autonomous agents designed to operate without user interaction",
+    ],
+    efficacy: {
+      success_rate: 0.0,
+      sample_size: 0,
+      last_updated: "2026-03-14",
+      confidence_interval: "N/A",
+    },
+    created_by: "system",
+    created_at: "2026-03-14",
+  },
 ];

@@ -11,7 +11,10 @@ export type Department =
   | "Ophthalmology"
   | "Endocrinology"
   | "Oncology"
-  | "Configuration";
+  | "Configuration"
+  | "Security"
+  | "Operations"
+  | "Systems";
 
 export type Severity = "Low" | "Moderate" | "High" | "Critical";
 

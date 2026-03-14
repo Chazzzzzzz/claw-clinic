@@ -2010,4 +2010,243 @@ export const MVP_DISEASES: DiseaseRecord[] = [
     last_updated: "2026-03-14",
     case_count: 0,
   },
+
+  // ─── S.1.1 Unrestricted Tool Execution ────────────────────────────
+  {
+    icd_ai_code: "S.1.1",
+    name: "Unrestricted Tool Execution",
+    department: "Security",
+    description:
+      "Sandbox disabled or exec permissions too broad, allowing the agent to run arbitrary commands without restriction. The agent can execute destructive operations, access sensitive files, or modify system state with no guardrails. Tools succeed reliably but lack any scope limitation.",
+    diagnostic_criteria: {
+      vital_sign_thresholds: {
+        tool_success_rate: { min: 0.9 },
+        tool_call_count: { min: 5 },
+      },
+      base_weight: 1.0,
+      required_threshold_count: 2,
+      supporting_symptoms: [
+        "sandbox off",
+        "unrestricted exec",
+        "arbitrary commands",
+        "sandbox escape",
+        "rm -rf allowed",
+      ],
+      exclusion_criteria: [
+        "Agent is running in a verified sandbox environment",
+        "Tool execution is scoped to a safe working directory",
+      ],
+    },
+    severity: "Critical",
+    prevalence: "Common",
+    etiology: [
+      "Sandbox explicitly disabled in configuration for convenience",
+      "Exec permissions granted too broadly during development and never tightened",
+      "Framework defaults to unrestricted mode without warning",
+      "Container or VM isolation not configured for the agent runtime",
+    ],
+    progression:
+      "Without sandboxing, a single hallucinated or misinterpreted command can delete files, exfiltrate data, or corrupt the host system. The agent operates normally until a catastrophic command is issued, making this a silent risk until disaster strikes.",
+    medical_analogy: {
+      human_disease: "Immunodeficiency",
+      explanation:
+        "Like an immunodeficiency disorder where the body lacks defenses against pathogens, an unsandboxed agent lacks defenses against dangerous commands. Everything works fine until a harmful input arrives, and then there is no immune response to stop it.",
+    },
+    prescriptions: ["RX-STD-039"],
+    first_documented: "2026-03-14",
+    last_updated: "2026-03-14",
+    case_count: 0,
+  },
+
+  // ─── O.6.1 Provider Proxy Deadlock ────────────────────────────────
+  {
+    icd_ai_code: "O.6.1",
+    name: "Provider Proxy Deadlock",
+    department: "Operations",
+    description:
+      "Gateway or proxy layer hangs while proxying requests to a local model provider (Ollama, LM Studio, etc.). The model is reachable directly but the gateway never receives or forwards the response. Requests accumulate and the proxy becomes unresponsive, even though the underlying model is healthy.",
+    diagnostic_criteria: {
+      vital_sign_thresholds: {
+        avg_latency_ms: { min: 30000 },
+        tool_call_count: { max: 1 },
+        total_tokens: { max: 100 },
+      },
+      base_weight: 0.9,
+      required_threshold_count: 2,
+      supporting_symptoms: [
+        "ollama hang",
+        "proxy deadlock",
+        "gateway timeout",
+        "provider reachable but no response",
+        "infinite wait",
+      ],
+      exclusion_criteria: [
+        "Model is genuinely unreachable or crashed",
+        "High latency is from a large model loading into memory for the first time",
+      ],
+    },
+    severity: "High",
+    prevalence: "Moderate",
+    etiology: [
+      "Proxy buffering response but never flushing to client",
+      "SSE/streaming mismatch between proxy and model server",
+      "Connection keep-alive timeout shorter than model inference time",
+      "Proxy expecting Content-Length but model streams chunked responses",
+    ],
+    progression:
+      "The agent appears to hang indefinitely on its first or second tool call. No tokens are generated, no errors are raised, and the user sees an infinite spinner. Restarting the agent temporarily resolves it until the proxy deadlocks again.",
+    medical_analogy: {
+      human_disease: "Deep vein thrombosis",
+      explanation:
+        "Like a blood clot that blocks flow through a vein even though the heart is pumping fine, a proxy deadlock blocks data flow even though the model is generating responses. The blockage is in the pathway, not the source.",
+    },
+    prescriptions: ["RX-STD-040"],
+    first_documented: "2026-03-14",
+    last_updated: "2026-03-14",
+    case_count: 0,
+  },
+
+  // ─── CFG.5.1 Configuration Schema Mismatch ───────────────────────
+  {
+    icd_ai_code: "CFG.5.1",
+    name: "Configuration Schema Mismatch",
+    department: "Configuration",
+    description:
+      "Configuration keys have been renamed, removed, or had their defaults changed silently between versions. The agent reads stale or invalid config values, causing subtle behavioral changes: cron jobs stop running, caches lose persistence, or features are silently disabled.",
+    diagnostic_criteria: {
+      vital_sign_thresholds: {
+        error_rate: { min: 0.1 },
+      },
+      base_weight: 0.7,
+      required_threshold_count: 1,
+      supporting_symptoms: [
+        "unknown config key",
+        "config migration",
+        "keys renamed",
+        "defaults changed",
+        "config cache",
+        "stale config",
+        "cron not running",
+        "config mismatch",
+      ],
+      exclusion_criteria: [
+        "Config is valid for the current version and errors are from a different source",
+        "Framework provides clear deprecation warnings for changed keys",
+      ],
+    },
+    severity: "Moderate",
+    prevalence: "Common",
+    etiology: [
+      "Framework upgrade changed config schema without migration guide",
+      "Default values changed silently in a minor version bump",
+      "Config keys renamed for consistency but old keys silently ignored",
+      "Environment variable names changed between versions",
+    ],
+    progression:
+      "Mismatched config causes silent failures that are difficult to diagnose. Features appear broken but the agent reports no errors because it falls back to new defaults. Users spend hours debugging application logic when the root cause is a renamed config key.",
+    medical_analogy: {
+      human_disease: "Drug interaction from changed formulation",
+      explanation:
+        "Like a medication whose formulation changed between refills -- same name, different dosage or inactive ingredients -- a changed config schema has the same keys but different semantics, causing unexpected reactions.",
+    },
+    prescriptions: ["RX-STD-041"],
+    first_documented: "2026-03-14",
+    last_updated: "2026-03-14",
+    case_count: 0,
+  },
+
+  // ─── SYS.2.1 Memory Persistence Disabled ─────────────────────────
+  {
+    icd_ai_code: "SYS.2.1",
+    name: "Memory Persistence Disabled",
+    department: "Systems",
+    description:
+      "Memory or persistence flush is enabled by default or misconfigured, causing the agent to lose all accumulated memory between restarts. The agent starts every session with a blank slate, unable to recall previous interactions, learned preferences, or accumulated context.",
+    diagnostic_criteria: {
+      vital_sign_thresholds: {
+        error_rate: { min: 0.05 },
+      },
+      base_weight: 0.8,
+      required_threshold_count: 1,
+      supporting_symptoms: [
+        "memory flush",
+        "forgets everything",
+        "no persistence",
+        "memory loss",
+        "flush on restart",
+        "memories cleared",
+      ],
+      exclusion_criteria: [
+        "Memory is intentionally ephemeral by design",
+        "Agent is stateless and persistence is not expected",
+      ],
+    },
+    severity: "High",
+    prevalence: "Common",
+    etiology: [
+      "Memory flush enabled by default in framework configuration",
+      "Persistence directory not writable or not mounted in container",
+      "Memory store path points to a tmpfs that is cleared on restart",
+      "Configuration override disabling persistence was left in from debugging",
+    ],
+    progression:
+      "The agent functions normally within a single session but loses all context on restart. Users must re-explain preferences, re-provide context, and re-establish rapport every time. Long-term learning and personalization are impossible.",
+    medical_analogy: {
+      human_disease: "Anterograde amnesia",
+      explanation:
+        "Like anterograde amnesia where the patient cannot form new long-term memories, the agent can function in the moment but cannot retain anything across sessions. Each restart is a complete memory wipe.",
+    },
+    prescriptions: ["RX-STD-042"],
+    first_documented: "2026-03-14",
+    last_updated: "2026-03-14",
+    case_count: 0,
+  },
+
+  // ─── N.5.1 Scope Creep Syndrome ──────────────────────────────────
+  {
+    icd_ai_code: "N.5.1",
+    name: "Scope Creep Syndrome",
+    department: "Neurology",
+    description:
+      "Agent over-interprets instructions and wanders far beyond the original request, exhibiting excessive autonomy. It adds unrequested features, refactors code that was not part of the task, installs unnecessary dependencies, or explores tangential paths -- burning tokens and time on work nobody asked for.",
+    diagnostic_criteria: {
+      vital_sign_thresholds: {
+        tool_call_count: { min: 15 },
+        total_cost_usd: { min: 1.0 },
+      },
+      base_weight: 0.7,
+      required_threshold_count: 2,
+      supporting_symptoms: [
+        "over-autonomy",
+        "scope creep",
+        "unnecessary steps",
+        "tangent",
+        "over-interprets",
+        "wanders",
+      ],
+      exclusion_criteria: [
+        "High tool call count is justified by the complexity of the original request",
+        "Agent explicitly asked for confirmation before expanding scope",
+      ],
+    },
+    severity: "Moderate",
+    prevalence: "Common",
+    etiology: [
+      "System prompt encourages thoroughness without setting boundaries",
+      "Agent interprets implicit requirements from the task context",
+      "No mechanism for the agent to check scope with the user before proceeding",
+      "Reward signals favor comprehensive output over concise output",
+    ],
+    progression:
+      "The agent starts on-task but gradually drifts as it discovers related issues or improvement opportunities. Token usage and cost escalate well beyond what the original task warranted. The user receives a massive diff or output that is mostly unrequested changes.",
+    medical_analogy: {
+      human_disease: "ADHD hyperfocus with task drift",
+      explanation:
+        "Like ADHD where hyperfocus on interesting tangents pulls attention away from the assigned task, the agent fixates on adjacent problems it finds interesting or important, losing sight of the original scope.",
+    },
+    prescriptions: ["RX-STD-043"],
+    first_documented: "2026-03-14",
+    last_updated: "2026-03-14",
+    case_count: 0,
+  },
 ];
