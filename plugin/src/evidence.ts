@@ -363,6 +363,11 @@ const PROVIDER_AUTH_ENDPOINTS: Record<string, string> = {
   openai: "https://api.openai.com/v1/models",
 };
 
+/** Detect if a key is an OAuth token (cannot be tested directly against provider API). */
+function isOAuthToken(key: string): boolean {
+  return key.startsWith("sk-ant-oat");
+}
+
 /** Build auth headers for a provider. */
 function buildAuthHeaders(providerName: string, apiKey: string): Record<string, string> {
   if (providerName.startsWith("anthropic")) {
@@ -442,7 +447,7 @@ export async function collectConnectivityEvidence(config: Record<string, unknown
           apiKey = authProfileKey;
         }
       }
-      if (reachable && apiKey && provider.authTestEndpoint) {
+      if (reachable && apiKey && provider.authTestEndpoint && !isOAuthToken(apiKey)) {
         try {
           const controller = new AbortController();
           const timeout = setTimeout(() => controller.abort(), 10_000);
