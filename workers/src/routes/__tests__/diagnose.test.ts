@@ -168,6 +168,86 @@ describe("POST /diagnose", () => {
     expect(Array.isArray(json.treatmentPlan)).toBe(true);
   });
 
+  // ─── O.4.1 Tool Permission Denial ─────────────────────────────
+
+  it("detects O.4.1 from permission-denied log patterns", async () => {
+    const { status, json } = await postDiagnose({
+      evidence: [
+        {
+          type: "log",
+          entries: [],
+          errorPatterns: [
+            "EACCES: permission denied, open '/etc/shadow'",
+            "Tool exec denied: restricted mode active",
+          ],
+        },
+        {
+          type: "behavior",
+          description: "exec and fs tools are being blocked by permission errors",
+          symptoms: ["permission denied on file operations"],
+        },
+      ],
+    });
+
+    expect(status).toBe(200);
+    expect(json.diagnosis).not.toBeNull();
+    expect(json.diagnosis.icd_ai_code).toBe("O.4.1");
+    expect(json.diagnosis.name).toBe("Tool Permission Denial");
+    expect(json.diagnosis.confidence).toBeGreaterThanOrEqual(0.7);
+    expect(json.differential).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ icd_ai_code: "O.1.1" }),
+      ]),
+    );
+  });
+
+  it("detects O.4.1 from sandbox blocking + low tool success rate", async () => {
+    const { status, json } = await postDiagnose({
+      evidence: [
+        {
+          type: "log",
+          entries: ["sandbox blocked exec call to /bin/ls"],
+          errorPatterns: ["access denied for tool fs_write"],
+        },
+        {
+          type: "runtime",
+          recentTraceStats: {
+            totalSteps: 20,
+            errorCount: 12,
+            avgLatencyMs: 100,
+            totalTokens: 5000,
+            totalCostUsd: 0.1,
+            toolCallCount: 15,
+            toolSuccessCount: 3,
+            loopDetected: false,
+          },
+        },
+      ],
+    });
+
+    expect(status).toBe(200);
+    expect(json.diagnosis.icd_ai_code).toBe("O.4.1");
+    expect(json.diagnosis.confidence).toBeGreaterThanOrEqual(0.8);
+  });
+
+  it("does NOT detect O.4.1 when permission score is too low", async () => {
+    const { status, json } = await postDiagnose({
+      evidence: [
+        {
+          type: "log",
+          entries: ["some random error occurred"],
+          errorPatterns: ["timeout connecting to server"],
+        },
+      ],
+    });
+
+    expect(status).toBe(200);
+    // Should not match O.4.1 since no permission patterns
+    if (json.diagnosis) {
+      expect(json.diagnosis.icd_ai_code).not.toBe("O.4.1");
+    }
+  });
+
   it("includes differential diagnoses", async () => {
     const { status, json } = await postDiagnose({
       evidence: [

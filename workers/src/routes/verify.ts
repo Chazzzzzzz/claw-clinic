@@ -143,6 +143,35 @@ const CFG_CHECKS: Record<string, VerificationStep[]> = {
       successCondition: "Authentication succeeds (no 401 or 403 response)",
     },
   ],
+  "O.4.1": [
+    {
+      id: "verify_permissions_config",
+      type: "check_config",
+      description: "Check openclaw permission configuration",
+      instruction: "Inspect openclaw.json and workspace settings for restrictedMode, permission deny rules, or sandbox settings that block exec/fs tools",
+      confidence: "high",
+      params: { target: "permissions", check: "tool_access" },
+      successCondition: "No permission deny rules or restricted mode settings are blocking exec/fs tools",
+    },
+    {
+      id: "verify_tool_access",
+      type: "check_file",
+      description: "Check security policy files for deny rules",
+      instruction: "Look for security policy or permission configuration files (e.g. .openclaw/security-policy.json, .openclaw/permissions.json) that may contain tool deny rules",
+      confidence: "medium",
+      params: { paths: ["~/.openclaw/security-policy.json", "~/.openclaw/permissions.json", ".openclaw/settings.json"] },
+      successCondition: "No security policy files contain deny rules for exec or filesystem tools",
+    },
+    {
+      id: "verify_tool_execution",
+      type: "custom",
+      description: "Verify exec/fs tools are now accessible",
+      instruction: "Attempt a simple tool call (e.g. list files in current directory) to confirm tools are no longer blocked",
+      confidence: "high",
+      params: { test_tool: "fs_read", test_action: "list_directory" },
+      successCondition: "A test tool call to exec or fs tools succeeds without permission errors",
+    },
+  ],
 };
 
 // ─── Plan generation ────────────────────────────────────────────

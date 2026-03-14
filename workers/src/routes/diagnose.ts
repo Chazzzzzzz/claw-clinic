@@ -307,6 +307,91 @@ diagnoseRouter.post("/diagnose", async (c) => {
       (e): e is RuntimeEvidence => e.type === "runtime"
     );
 
+    // 2.5. Check for tool permission denial patterns in log/behavior evidence
+    const permissionPatterns = [
+      /EACCES|permission denied|not allowed|restricted mode|access denied|sandbox.*block/i,
+      /tool.*denied|denied.*tool|cannot invoke|cannot execute/i,
+    ];
+
+    const logEvidence = evidence.filter((e) => e.type === "log");
+    const behaviorEvidence = evidence.filter((e) => e.type === "behavior");
+
+    let permissionDenialScore = 0;
+    const permissionDetails: string[] = [];
+
+    for (const ev of logEvidence) {
+      if (ev.type === "log" && ev.errorPatterns) {
+        for (const pattern of ev.errorPatterns) {
+          if (permissionPatterns.some((re) => re.test(pattern))) {
+            permissionDenialScore += 1;
+            permissionDetails.push(pattern);
+          }
+        }
+      }
+      if (ev.type === "log" && ev.entries) {
+        for (const entry of ev.entries) {
+          if (permissionPatterns.some((re) => re.test(entry))) {
+            permissionDenialScore += 0.5;
+            permissionDetails.push(entry);
+          }
+        }
+      }
+    }
+
+    for (const ev of behaviorEvidence) {
+      if (ev.type === "behavior") {
+        if (permissionPatterns.some((re) => re.test(ev.description))) {
+          permissionDenialScore += 1;
+          permissionDetails.push(ev.description);
+        }
+        if (ev.symptoms) {
+          for (const s of ev.symptoms) {
+            if (permissionPatterns.some((re) => re.test(s))) {
+              permissionDenialScore += 0.5;
+              permissionDetails.push(s);
+            }
+          }
+        }
+      }
+    }
+
+    // Also check runtime evidence for low tool success rate with permission indicators
+    for (const rt of runtimeEvidence) {
+      if (rt.recentTraceStats) {
+        const stats = rt.recentTraceStats;
+        const successRate = stats.toolCallCount > 0
+          ? stats.toolSuccessCount / stats.toolCallCount
+          : 1;
+        if (successRate < 0.4 && permissionDenialScore > 0) {
+          permissionDenialScore += 1;
+        }
+      }
+    }
+
+    if (permissionDenialScore >= 2) {
+      const treatmentPlan = buildTreatmentPlan("O.4.1");
+      if (treatmentPlan.length > 0) {
+        createSession(sessionId, "O.4.1", treatmentPlan);
+      }
+      return c.json({
+        sessionId,
+        diagnosis: {
+          icd_ai_code: "O.4.1",
+          name: "Tool Permission Denial",
+          confidence: Math.min(0.95, 0.6 + permissionDenialScore * 0.1),
+          severity: "High",
+          reasoning: `Tool permission denial detected. Evidence: ${permissionDetails.slice(0, 3).join("; ")}. The agent's tools are being blocked by permission or security policies rather than tool errors.`,
+        },
+        differential: [{
+          icd_ai_code: "O.1.1",
+          name: "Tool Calling Fracture",
+          confidence: 0.3,
+        }],
+        treatmentPlan,
+        summary: `Tool permission denial detected (O.4.1). Tools are being blocked by permission policies.`,
+      });
+    }
+
     // Add environment/runtime context to symptoms for better matching
     for (const env of envEvidence) {
       if (env.plugins) {

@@ -1762,4 +1762,65 @@ export const STANDARD_PRESCRIPTIONS: Prescription[] = [
     created_by: "system",
     created_at: "2026-03-12",
   },
+  // ─── RX-DYN-O41: Permission Restoration Protocol (O.4.1) ─────────
+  {
+    id: "RX-DYN-O41",
+    name: "Permission Restoration Protocol",
+    version: "1.0.0",
+    target_disease: "O.4.1",
+    target_frameworks: ["all"],
+    type: "acute",
+    risk_level: "medium",
+    auto_applicable: false,
+    steps: [
+      {
+        action: "manual_steps",
+        target: "config_inspection",
+        change:
+          "Identify the root cause of tool permission denial. Check: (1) openclaw.json for 'permissions' or 'restrictedMode' settings, (2) Security policy files for deny rules targeting exec/fs tools, (3) Sandbox configuration restricting file or process access, (4) Plugin-level permission overrides.",
+        rationale:
+          "Permission denials have multiple possible root causes. The specific fix depends on which layer is blocking access.",
+        reversible: true,
+      },
+      {
+        action: "manual_steps",
+        target: "user_interaction",
+        change:
+          "Present the identified permission blocker to the user with a specific fix recommendation. The user must approve the configuration change since it affects security posture.",
+        rationale:
+          "Permission settings are security-sensitive. The user must explicitly approve any changes to avoid unintended security weakening.",
+        reversible: true,
+      },
+      {
+        action: "instruction",
+        target: "verification",
+        change:
+          "After the user applies the fix, verify that the previously denied tools now execute successfully by running a test tool call.",
+        rationale:
+          "Confirm the permission change took effect and tools are accessible before declaring the issue resolved.",
+        reversible: true,
+      },
+    ],
+    dosage: {
+      parameters: { max_verification_attempts: 3 },
+      adjustments:
+        "If the permission block is at the OS level (e.g., macOS sandbox), the fix may require restarting openclaw or changing system preferences.",
+    },
+    side_effects: [
+      "Relaxing permissions may expose the agent to security risks",
+      "Changing sandbox settings may affect other tools or plugins",
+    ],
+    contraindications: [
+      "Environments where tool restrictions are intentional security policy",
+      "Shared systems where permission changes affect other users",
+    ],
+    efficacy: {
+      success_rate: 0.0,
+      sample_size: 0,
+      last_updated: "2026-03-14",
+      confidence_interval: "N/A",
+    },
+    created_by: "system",
+    created_at: "2026-03-14",
+  },
 ];

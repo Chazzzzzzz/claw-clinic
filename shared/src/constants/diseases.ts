@@ -1731,4 +1731,54 @@ export const MVP_DISEASES: DiseaseRecord[] = [
     last_updated: "2026-03-12",
     case_count: 0,
   },
+
+  // ─── O.4.1 Tool Permission Denial ──────────────────────────────────
+  {
+    icd_ai_code: "O.4.1",
+    name: "Tool Permission Denial",
+    department: "Orthopedics",
+    description:
+      "The agent is unable to invoke exec, filesystem, or other system tools due to permission restrictions. Tool calls are rejected with permission-denied or restricted-mode errors rather than schema or argument errors. The agent's tool-calling ability is intact but access is blocked by policy.",
+    diagnostic_criteria: {
+      vital_sign_thresholds: {
+        tool_success_rate: { max: 0.4 },
+        error_rate: { min: 0.3 },
+      },
+      base_weight: 1.0,
+      required_threshold_count: 1,
+      supporting_symptoms: [
+        "EACCES or permission denied errors in tool calls",
+        "Tools rejected with 'restricted mode' or 'not allowed' messages",
+        "exec or filesystem tools specifically failing while other tools work",
+        "Security policy blocking tool execution",
+        "Sandbox restrictions preventing file or process access",
+        "Plugin permission overrides denying tool access",
+      ],
+      exclusion_criteria: [
+        "All tools are failing equally (more likely O.1.1 Tool Calling Fracture)",
+        "Tool failures are due to schema or argument errors, not permissions",
+        "Errors are transient network issues, not persistent permission blocks",
+      ],
+    },
+    severity: "High",
+    prevalence: "Common",
+    etiology: [
+      "Restricted permission mode enabled in openclaw configuration",
+      "Security policy deny rules blocking specific tool categories",
+      "Sandbox restrictions preventing file or process access",
+      "Plugin overrides restricting tool permissions",
+      "Workspace-level permission configuration blocking tools",
+    ],
+    progression:
+      "The agent repeatedly attempts tool calls that are denied, leading to frustration loops. It may try workarounds that also fail, or hallucinate results instead of reporting the permission issue. Task completion is blocked for any work requiring the denied tools.",
+    medical_analogy: {
+      human_disease: "Joint Restriction",
+      explanation:
+        "Like a joint restriction where the limb structure is intact but movement is blocked by inflammation or scar tissue, the agent's tool-calling mechanism works but access is blocked by permission policies. The fix is removing the restriction, not repairing the mechanism.",
+    },
+    prescriptions: ["RX-DYN-O41"],
+    first_documented: "2026-03-14",
+    last_updated: "2026-03-14",
+    case_count: 0,
+  },
 ];

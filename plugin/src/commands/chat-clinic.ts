@@ -269,8 +269,10 @@ async function runDiagnosis(
     }
 
     // Step 3.5: Pre-verify — check if the diagnosed issue is still active
+    // Skip pre-verify shortcut when user explicitly described symptoms — they're
+    // reporting a NEW problem, not asking about the old one.
     const preVerification = await reVerify(diagnosis.diagnosis.icd_ai_code, api.config, client);
-    if (preVerification.passed) {
+    if (preVerification.passed && !symptoms) {
       stopTicker();
       return { text: `Previously detected **${diagnosis.diagnosis.name}** has already been resolved. No action needed.` };
     }

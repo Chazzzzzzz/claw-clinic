@@ -96,6 +96,27 @@ describe("POST /verify", () => {
     }
   });
 
+  it("returns O.4.1-specific verification steps for Tool Permission Denial", async () => {
+    const { status, json } = await postVerify({
+      diseaseCode: "O.4.1",
+    });
+
+    expect(status).toBe(200);
+    expect(json.diseaseCode).toBe("O.4.1");
+    expect(json.diseaseName).toBe("Tool Permission Denial");
+    expect(json.steps.length).toBe(3);
+
+    // Should have permission config check, file check, and tool execution check
+    const types = json.steps.map((s: { type: string }) => s.type);
+    expect(types).toContain("check_config");
+    expect(types).toContain("check_file");
+    expect(types).toContain("custom");
+
+    // Verify the steps have meaningful descriptions
+    const descriptions = json.steps.map((s: { description: string }) => s.description).join(" ");
+    expect(descriptions).toMatch(/permission/i);
+  });
+
   it("returns different verification plans for different disease codes", async () => {
     const [loop, cost] = await Promise.all([
       postVerify({ diseaseCode: "E.1.1" }),
