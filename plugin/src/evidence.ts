@@ -434,9 +434,9 @@ export async function collectConnectivityEvidence(config: Record<string, unknown
       }
 
       // Step 2: Actual auth test (if reachable and we have a key)
-      // Only use authProfileKey as fallback if it matches this provider
+      // Prefer fresh key from auth-profiles (disk) over stale config key (memory)
       let apiKey = provider.apiKey;
-      if (!apiKey && authProfileKey) {
+      if (authProfileKey) {
         const keyProvider = detectProvider(authProfileKey);
         if (keyProvider === provider.name || keyProvider?.startsWith(provider.name)) {
           apiKey = authProfileKey;
