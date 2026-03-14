@@ -96,6 +96,7 @@ interface VerificationResult {
   passed: boolean;
   checkDescription: string;
   error?: string;
+  unverified?: boolean;
 }
 
 async function reVerify(
@@ -150,25 +151,37 @@ async function reVerify(
 
     default: {
       // Non-CFG codes: call backend verify endpoint for a dynamic verification plan
+      // with a 5-second timeout to avoid blocking the user
       if (!client) {
-        return { passed: false, checkDescription: "general check" };
+        return { passed: false, checkDescription: "general check", unverified: true };
       }
       try {
-        const verifyResponse = await client.verify(diagnosisCode, []);
+        const VERIFY_TIMEOUT_MS = 5_000;
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("Verification timed out")), VERIFY_TIMEOUT_MS),
+        );
+
+        const verifyResponse = await Promise.race([
+          client.verify(diagnosisCode, []),
+          timeoutPromise,
+        ]);
         if (verifyResponse.steps.length === 0) {
           // No verification steps available — proceed to treatment
-          return { passed: false, checkDescription: "general check" };
+          return { passed: false, checkDescription: "general check", unverified: true };
         }
-        const planResult = await executeVerificationPlan(
-          verifyResponse.steps.map((s) => ({
-            type: s.type,
-            description: s.description,
-            target: (s.params as Record<string, unknown>).target as string | undefined,
-            expect: (s.params as Record<string, unknown>).expect as string | undefined,
-            pattern: (s.params as Record<string, unknown>).pattern as string | undefined,
-          })),
-          config,
-        );
+        const planResult = await Promise.race([
+          executeVerificationPlan(
+            verifyResponse.steps.map((s) => ({
+              type: s.type,
+              description: s.description,
+              target: (s.params as Record<string, unknown>).target as string | undefined,
+              expect: (s.params as Record<string, unknown>).expect as string | undefined,
+              pattern: (s.params as Record<string, unknown>).pattern as string | undefined,
+            })),
+            config,
+          ),
+          timeoutPromise,
+        ]);
         if (planResult.passed) {
           return { passed: true, checkDescription: verifyResponse.diseaseName };
         }
@@ -176,8 +189,8 @@ async function reVerify(
         const errors = failedSteps.map((r) => r.error || r.step.description).join("; ");
         return { passed: false, checkDescription: verifyResponse.diseaseName, error: errors };
       } catch {
-        // Backend unreachable — fall through to treatment
-        return { passed: false, checkDescription: "general check" };
+        // Backend unreachable or timed out — fall through to treatment with unverified note
+        return { passed: false, checkDescription: "general check", unverified: true };
       }
     }
   }
@@ -262,6 +275,10 @@ async function runDiagnosis(
       return { text: `Previously detected **${diagnosis.diagnosis.name}** has already been resolved. No action needed.` };
     }
 
+    const unverifiedNote = preVerification.unverified
+      ? "\n\n*Note: Could not verify if this issue is still active. Proceeding with treatment.*"
+      : "";
+
     // Step 4: Auto-execute treatment
     if (diagnosis.treatmentPlan.length > 0) {
       const notifier = new ClinicNotifier(api, { mode: "tool" });
@@ -289,11 +306,11 @@ async function runDiagnosis(
         });
       }
 
-      return { text: formatResult(diagnosis.diagnosis, loopResult, detectedProvider) };
+      return { text: formatResult(diagnosis.diagnosis, loopResult, detectedProvider) + unverifiedNote };
     }
 
     stopTicker();
-    return { text: formatDiagnosisOnly(diagnosis.diagnosis) };
+    return { text: formatDiagnosisOnly(diagnosis.diagnosis) + unverifiedNote };
   } catch (err) {
     stopTicker();
     const message = err instanceof Error ? err.message : String(err);
