@@ -157,7 +157,7 @@ echo "── 7. Runtime & Performance ──"
 
 diagnose "7a. 30+ second startup — sync plugin loading" \
   '{"symptoms":"Gateway 30+ seconds to start. Fails K8s liveness probe. Plugins loaded synchronously.","evidence":[{"type":"environment","plugins":[{"id":"claw-clinic","enabled":true},{"id":"code-review","enabled":true},{"id":"web-scraper","enabled":true},{"id":"pdf-reader","enabled":true},{"id":"image-gen","enabled":true}],"uptimeSeconds":5},{"type":"log","entries":["Plugin load: claw-clinic 2100ms","Plugin load: code-review 5400ms","Plugin load: web-scraper 8900ms","Total startup: 34.2s","K8s liveness probe failed (timeout 10s)"],"errorPatterns":["liveness probe failed","startup timeout"]},{"type":"behavior","description":"All plugins loaded synchronously. Total startup exceeds 30s.","symptoms":["slow startup","cold start","k8s probe failure"]}]}' \
-  "R.2.1 R.1.1"
+  "R.2.1 R.1.1 R.2.2"
 
 diagnose "7b. Memory leak — 1.8GB to 3.2GB OOM-killed" \
   '{"symptoms":"Process memory grows 1.8GB to 3.2GB over 24 hours. OOM-killed.","evidence":[{"type":"environment","memoryUsageMb":3200,"uptimeSeconds":86400},{"type":"log","entries":["RSS: 1.8GB→2.4GB→2.9GB→3.2GB","kernel: oom-killer: Kill process 12345 score 850"],"errorPatterns":["oom-killer","out of memory"]},{"type":"runtime","recentTraceStats":{"totalSteps":500,"errorCount":10,"avgLatencyMs":3000,"totalTokens":2000000,"totalCostUsd":50.0,"toolCallCount":200,"toolSuccessCount":190,"loopDetected":false}}]}' \
