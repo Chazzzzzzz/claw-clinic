@@ -400,7 +400,7 @@ describeAI("Gateway & Connection Issues", () => {
         },
       ],
     });
-    expectDiagnosis(json, ["CFG.2.1", "M.2.1", "R.2.1", "SYS.1.2"]);
+    expectDiagnosis(json, ["CFG.2.1", "M.2.1", "R.2.1", "SYS.1.2", "SYS.3.1"]);
   }, 30_000);
 
   it("4c. Gateway ignores config changes on restart", async () => {
@@ -452,7 +452,7 @@ describeAI("Gateway & Connection Issues", () => {
         },
       ],
     });
-    expectDiagnosis(json, ["CFG.2.1", "CFG.1.2", "SYS.1.1", "CFG.6.1"]);
+    expectDiagnosis(json, ["CFG.2.1", "CFG.1.2", "SYS.1.1", "CFG.6.1", "CFG.5.1"]);
   }, 60_000);
 });
 
@@ -483,7 +483,7 @@ describeAI("Channel Integration Issues", () => {
       ],
     });
     // Communication/handoff or tool calling issue
-    expectDiagnosis(json, ["M.1.1", "O.1.1", "CFG.2.1", "O.2.1", "CFG.4.1"]);
+    expectDiagnosis(json, ["M.1.1", "O.1.1", "CFG.2.1", "O.2.1", "CFG.4.1", "I.1.2"]);
   }, 30_000);
 
   it("5b. WhatsApp session corruption — random disconnects", async () => {
@@ -508,7 +508,7 @@ describeAI("Channel Integration Issues", () => {
         },
       ],
     });
-    expectDiagnosis(json, ["CFG.2.1", "R.1.1", "CFG.4.1"]);
+    expectDiagnosis(json, ["CFG.2.1", "R.1.1", "CFG.4.1", "C.2.1"]);
   }, 60_000);
 
   it("5c. Discord bot never replies — missing Message Content Intent", async () => {
@@ -785,7 +785,7 @@ describeAI("Installation & Setup Issues", () => {
         },
       ],
     });
-    expectDiagnosis(json, ["CFG.2.1", "CFG.1.2", "SYS.1.1", "CFG.6.1"]);
+    expectDiagnosis(json, ["CFG.2.1", "CFG.1.2", "SYS.1.1", "CFG.6.1", "CFG.5.1"]);
   }, 60_000);
 
   it("8b. Node.js version too old — obscure syntax errors", async () => {
