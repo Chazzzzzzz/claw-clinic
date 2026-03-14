@@ -78,33 +78,33 @@ const SUBMIT_DIAGNOSIS_TOOL: Anthropic.Tool = {
         description:
           "Treatment steps if the disease code is NOT in the known catalog. REQUIRED for novel codes — include actionable steps the user can follow to resolve the issue.",
       },
-    },
-    checks: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          type: { type: "string", enum: ["check_config", "check_connectivity", "check_file", "check_process"] },
-          target: { type: "string" },
-          expect: { type: "string" },
-          label: { type: "string" },
+      checks: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            type: { type: "string", enum: ["check_config", "check_connectivity", "check_file", "check_process"] },
+            target: { type: "string" },
+            expect: { type: "string" },
+            label: { type: "string" },
+          },
+          required: ["type", "target", "expect", "label"],
         },
-        required: ["type", "target", "expect", "label"],
+        description: "2-5 checks for the plugin to run locally. Each check has a type (what to check), target (config key path, URL, file path, or process name), expect (expected good state like 'present', 'reachable', 'off', or a specific value), and label (human-readable like: sandbox.mode = \"off\").",
       },
-      description: "2-5 checks for the plugin to run locally. Each check has a type (what to check), target (config key path, URL, file path, or process name), expect (expected good state like 'present', 'reachable', 'off', or a specific value), and label (human-readable like: sandbox.mode = \"off\").",
-    },
-    fixes: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          label: { type: "string" },
-          command: { type: "string" },
-          description: { type: "string" },
+      fixes: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            label: { type: "string" },
+            command: { type: "string" },
+            description: { type: "string" },
+          },
+          required: ["label", "command", "description"],
         },
-        required: ["label", "command", "description"],
+        description: "2-3 concrete fix options. Each fix has a short label (under 40 chars), the exact terminal command to run (like 'openclaw config set sandbox.mode off'), and a 1-line description of what it does.",
       },
-      description: "2-3 concrete fix options. Each fix has a short label (under 40 chars), the exact terminal command to run (like 'openclaw config set sandbox.mode off'), and a 1-line description of what it does.",
     },
     required: ["icd_ai_code", "name", "confidence", "severity", "reasoning", "differential", "checks", "fixes"],
   },
