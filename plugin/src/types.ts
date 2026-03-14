@@ -109,6 +109,23 @@ export interface TreatmentResponse {
   sessionId: string;
 }
 
+// ─── Verification Types ─────────────────────────────────────────
+
+export interface VerificationStep {
+  id: string;
+  type: "check_file" | "check_connectivity" | "check_config" | "check_process" | "check_logs" | "custom";
+  description: string;
+  instruction: string;
+  params: Record<string, unknown>;
+  successCondition: string;
+}
+
+export interface VerificationPlanResponse {
+  diseaseCode: string;
+  diseaseName: string;
+  steps: VerificationStep[];
+}
+
 // ─── Plugin API Types (minimal OpenClaw plugin API surface) ─────
 
 export interface CliRegistrationContext {

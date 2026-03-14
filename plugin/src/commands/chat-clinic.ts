@@ -16,6 +16,7 @@ import { runTreatmentLoop } from "../treatment-loop.js";
 import { ClinicNotifier } from "../notifier.js";
 import { loadSession, saveSession, clearSession } from "../session-store.js";
 import { getUserGuide, getKeyLengthGuide } from "../user-guides.js";
+import { executeVerificationPlan } from "../verification-executor.js";
 
 /**
  * Register /clinic as a chat command via registerCommand.
@@ -100,6 +101,7 @@ interface VerificationResult {
 async function reVerify(
   diagnosisCode: string,
   config: Record<string, unknown>,
+  client?: ClawClinicClient,
 ): Promise<VerificationResult> {
   switch (diagnosisCode) {
     case "CFG.3.1": {
@@ -146,9 +148,38 @@ async function reVerify(
       return { passed: true, checkDescription: "API key format" };
     }
 
-    default:
-      // No re-verification available for this code — pass through
-      return { passed: true, checkDescription: "general check" };
+    default: {
+      // Non-CFG codes: call backend verify endpoint for a dynamic verification plan
+      if (!client) {
+        return { passed: false, checkDescription: "general check" };
+      }
+      try {
+        const verifyResponse = await client.verify(diagnosisCode, []);
+        if (verifyResponse.steps.length === 0) {
+          // No verification steps available — proceed to treatment
+          return { passed: false, checkDescription: "general check" };
+        }
+        const planResult = await executeVerificationPlan(
+          verifyResponse.steps.map((s) => ({
+            type: s.type,
+            description: s.description,
+            target: (s.params as Record<string, unknown>).target as string | undefined,
+            expect: (s.params as Record<string, unknown>).expect as string | undefined,
+            pattern: (s.params as Record<string, unknown>).pattern as string | undefined,
+          })),
+          config,
+        );
+        if (planResult.passed) {
+          return { passed: true, checkDescription: verifyResponse.diseaseName };
+        }
+        const failedSteps = planResult.results.filter((r) => !r.passed);
+        const errors = failedSteps.map((r) => r.error || r.step.description).join("; ");
+        return { passed: false, checkDescription: verifyResponse.diseaseName, error: errors };
+      } catch {
+        // Backend unreachable — fall through to treatment
+        return { passed: false, checkDescription: "general check" };
+      }
+    }
   }
 }
 
@@ -224,6 +255,13 @@ async function runDiagnosis(
       return { text: "Your agent appears healthy. No issues detected." };
     }
 
+    // Step 3.5: Pre-verify — check if the diagnosed issue is still active
+    const preVerification = await reVerify(diagnosis.diagnosis.icd_ai_code, api.config, client);
+    if (preVerification.passed) {
+      stopTicker();
+      return { text: `Previously detected **${diagnosis.diagnosis.name}** has already been resolved. No action needed.` };
+    }
+
     // Step 4: Auto-execute treatment
     if (diagnosis.treatmentPlan.length > 0) {
       const notifier = new ClinicNotifier(api, { mode: "tool" });
@@ -291,7 +329,7 @@ async function handleFollowUp(
     }
 
     // Re-verify connection with the new key
-    const verification = await reVerify(session.diagnosisCode, api.config);
+    const verification = await reVerify(session.diagnosisCode, api.config, client);
     if (verification.passed) {
       // Report success to backend with masked key
       try {
@@ -333,7 +371,7 @@ async function handleFollowUp(
   const isAffirmative = isAffirmativeResponse(userInput);
 
   // Req 1a: Re-verify before claiming "Fixed"
-  const verification = await reVerify(session.diagnosisCode, api.config);
+  const verification = await reVerify(session.diagnosisCode, api.config, client);
 
   if (!verification.passed) {
     // Re-test failed — do NOT advance. Keep session paused.

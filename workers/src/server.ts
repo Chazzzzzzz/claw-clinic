@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import diagnoseRouter from "./routes/diagnose.js";
 import treatRouter from "./routes/treat.js";
+import verifyRouter from "./routes/verify.js";
 
 const app = new Hono();
 
@@ -14,5 +15,7 @@ app.get("/health", (c) => {
 app.route("/", diagnoseRouter);
 
 app.route("/treat", treatRouter);
+
+app.route("/verify", verifyRouter);
 
 export { app };

@@ -1,4 +1,4 @@
-import type { Evidence, DiagnosisResponse, TreatmentResponse } from "./types.js";
+import type { Evidence, DiagnosisResponse, TreatmentResponse, VerificationPlanResponse } from "./types.js";
 
 export class ClawClinicClient {
   private baseUrl: string;
@@ -43,5 +43,18 @@ export class ClawClinicClient {
       throw new Error(`Treatment failed: ${res.status} — ${body}`);
     }
     return res.json() as Promise<TreatmentResponse>;
+  }
+
+  async verify(diseaseCode: string, evidence: Evidence[]): Promise<VerificationPlanResponse> {
+    const res = await fetch(`${this.baseUrl}/verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ diseaseCode, evidence }),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Verification failed: ${res.status} — ${body}`);
+    }
+    return res.json() as Promise<VerificationPlanResponse>;
   }
 }
