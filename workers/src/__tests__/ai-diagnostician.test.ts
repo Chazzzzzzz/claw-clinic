@@ -60,6 +60,12 @@ describe("aiDiagnose", () => {
             differential: [
               { icd_ai_code: "O.1.1", name: "Tool Calling Fracture", confidence: 0.3 },
             ],
+            checks: [
+              { type: "check_config", target: "tools.exec.restricted", expect: "false", label: "Tool execution unrestricted" },
+            ],
+            fixes: [
+              { label: "Allow tool execution", command: "openclaw config set tools.exec.restricted false", description: "Disable tool restrictions" },
+            ],
           },
         },
       ],
@@ -74,6 +80,8 @@ describe("aiDiagnose", () => {
     expect(result!.severity).toBe("High");
     expect(result!.differential).toHaveLength(1);
     expect(result!.differential[0].icd_ai_code).toBe("O.1.1");
+    expect(result!.checks).toHaveLength(1);
+    expect(result!.fixes).toHaveLength(1);
 
     // Verify the API was called with correct params
     expect(mockCreate).toHaveBeenCalledOnce();
@@ -103,6 +111,14 @@ describe("aiDiagnose", () => {
             treatment_steps: [
               { action: "reset_context", description: "Clear the agent's context and restart.", requires_user_input: false },
               { action: "reduce_input", description: "Reduce input size for next run.", requires_user_input: true },
+            ],
+            checks: [
+              { type: "check_process", target: "openclaw", expect: "running", label: "OpenClaw process running" },
+              { type: "check_config", target: "context.maxTokens", expect: "100000", label: "Context limit configured" },
+            ],
+            fixes: [
+              { label: "Reset context window", command: "openclaw context reset", description: "Clear the current context window" },
+              { label: "Set context limit", command: "openclaw config set context.maxTokens 100000", description: "Set a reasonable context token limit" },
             ],
           },
         },

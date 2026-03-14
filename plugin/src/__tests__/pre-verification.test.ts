@@ -51,6 +51,11 @@ vi.mock("../treatment-loop.js", () => ({
   }),
 }));
 
+// Mock verification-executor
+vi.mock("../verification-executor.js", () => ({
+  executeVerificationPlan: vi.fn().mockResolvedValue({ passed: true, results: [] }),
+}));
+
 // ─── Helpers ─────────────────────────────────────────────────────
 
 function createMockApi(): PluginApi {
@@ -95,8 +100,7 @@ describe("Pre-verification in fresh diagnosis flow", () => {
     handler = getClinicHandler(api, client);
   });
 
-  it("skips treatment and returns resolved message when pre-verification passes", async () => {
-    // Backend returns a diagnosis for CFG.1.2 (API Key Missing)
+  it("skips treatment and returns resolved when backend verify passes", async () => {
     client.diagnose.mockResolvedValue({
       sessionId: "sess-1",
       diagnosis: {
@@ -110,26 +114,38 @@ describe("Pre-verification in fresh diagnosis flow", () => {
       treatmentPlan: [
         { id: "step_1", action: "prompt_user", description: "Provide API key", requiresUserInput: true },
       ],
+      checks: [],
+      fixes: [],
     });
 
-    // Mock collectConfigEvidence to return a present API key (issue already fixed)
-    const { collectConfigEvidence } = await import("../evidence.js");
-    (collectConfigEvidence as ReturnType<typeof vi.fn>).mockReturnValue({
-      type: "config",
-      apiKey: { masked: "sk-ant-a...xxxx", provider: "anthropic" },
+    // Backend verify returns steps
+    client.verify.mockResolvedValue({
+      diseaseCode: "CFG.1.2",
+      diseaseName: "API Key Missing",
+      steps: [{
+        id: "v1", type: "check_config", description: "Check API key",
+        instruction: "Check key", confidence: "high",
+        params: { target: "apiKey", expect: "present" },
+        successCondition: "key present",
+      }],
+    });
+
+    // Verification plan passes (key now exists)
+    const { executeVerificationPlan } = await import("../verification-executor.js");
+    (executeVerificationPlan as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      passed: true,
+      results: [{ step: { type: "check_config", description: "Check API key" }, passed: true }],
     });
 
     const result = await handler({ args: "" });
 
     expect(result.text).toContain("resolved");
     expect(result.text).toContain("API Key Missing");
-    // Treatment loop should NOT have been called
     const { runTreatmentLoop } = await import("../treatment-loop.js");
     expect(runTreatmentLoop).not.toHaveBeenCalled();
   });
 
-  it("proceeds with treatment when pre-verification fails", async () => {
-    // Backend returns CFG.1.2 diagnosis
+  it("proceeds with treatment when backend verify fails", async () => {
     client.diagnose.mockResolvedValue({
       sessionId: "sess-2",
       diagnosis: {
@@ -143,24 +159,38 @@ describe("Pre-verification in fresh diagnosis flow", () => {
       treatmentPlan: [
         { id: "step_1", action: "prompt_user", description: "Provide API key", requiresUserInput: true },
       ],
+      checks: [],
+      fixes: [],
     });
 
-    // Mock collectConfigEvidence to return NO API key (issue still active)
-    const { collectConfigEvidence } = await import("../evidence.js");
-    (collectConfigEvidence as ReturnType<typeof vi.fn>).mockReturnValue({
-      type: "config",
+    // Backend verify returns steps
+    client.verify.mockResolvedValue({
+      diseaseCode: "CFG.1.2",
+      diseaseName: "API Key Missing",
+      steps: [{
+        id: "v1", type: "check_config", description: "Check API key",
+        instruction: "Check key", confidence: "high",
+        params: { target: "apiKey", expect: "present" },
+        successCondition: "key present",
+      }],
+    });
+
+    // Verification plan fails (key still missing)
+    const { executeVerificationPlan } = await import("../verification-executor.js");
+    (executeVerificationPlan as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      passed: false,
+      results: [{ step: { type: "check_config", description: "Check API key" }, passed: false, error: "Key missing" }],
     });
 
     const result = await handler({ args: "" });
 
-    // Should proceed to treatment (paused_for_input from mock)
     expect(result.text).not.toContain("resolved");
     expect(result.text).toContain("API Key Missing");
     const { runTreatmentLoop } = await import("../treatment-loop.js");
     expect(runTreatmentLoop).toHaveBeenCalled();
   });
 
-  it("returns resolved message for auth failure (CFG.3.1) when re-verification passes", async () => {
+  it("returns resolved for auth failure (CFG.3.1) when re-verification passes", async () => {
     client.diagnose.mockResolvedValue({
       sessionId: "sess-3",
       diagnosis: {
@@ -174,16 +204,26 @@ describe("Pre-verification in fresh diagnosis flow", () => {
       treatmentPlan: [
         { id: "step_1", action: "prompt_user", description: "Update API key", requiresUserInput: true },
       ],
+      checks: [],
+      fixes: [],
     });
 
-    // Mock connectivity: auth now passes (user already fixed their key)
-    const { collectConnectivityEvidence } = await import("../evidence.js");
-    (collectConnectivityEvidence as ReturnType<typeof vi.fn>).mockResolvedValue({
-      type: "connectivity",
-      providers: [
-        { name: "anthropic", endpoint: "https://api.anthropic.com", reachable: true, authStatus: "ok" },
-      ],
-      gatewayReachable: true,
+    // Backend verify returns steps that pass
+    client.verify.mockResolvedValue({
+      diseaseCode: "CFG.3.1",
+      diseaseName: "Auth Failure",
+      steps: [{
+        id: "v1", type: "check_connectivity", description: "Check auth",
+        instruction: "Check auth", confidence: "high",
+        params: { target: "anthropic" },
+        successCondition: "auth ok",
+      }],
+    });
+
+    const { executeVerificationPlan } = await import("../verification-executor.js");
+    (executeVerificationPlan as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      passed: true,
+      results: [{ step: { type: "check_connectivity", description: "Check auth" }, passed: true }],
     });
 
     const result = await handler({ args: "" });
@@ -200,6 +240,8 @@ describe("Pre-verification in fresh diagnosis flow", () => {
       diagnosis: null,
       differential: [],
       treatmentPlan: [],
+      checks: [],
+      fixes: [],
     });
 
     const result = await handler({ args: "" });
@@ -208,7 +250,7 @@ describe("Pre-verification in fresh diagnosis flow", () => {
     expect(result.text).toContain("No issues detected");
   });
 
-  it("proceeds to treatment for unknown disease codes (default re-verify returns not passed)", async () => {
+  it("proceeds to treatment when backend verify times out", async () => {
     client.diagnose.mockResolvedValue({
       sessionId: "sess-5",
       diagnosis: {
@@ -222,19 +264,32 @@ describe("Pre-verification in fresh diagnosis flow", () => {
       treatmentPlan: [
         { id: "step_1", action: "report", description: "Report loop", requiresUserInput: false },
       ],
+      checks: [],
+      fixes: [],
+    });
+
+    // Backend verify throws (timeout)
+    client.verify.mockRejectedValue(new Error("timeout"));
+
+    // Connectivity fallback: providers have issues
+    const { collectConnectivityEvidence } = await import("../evidence.js");
+    (collectConnectivityEvidence as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      type: "connectivity",
+      providers: [
+        { name: "anthropic", endpoint: "https://api.anthropic.com", reachable: false, error: "timeout" },
+      ],
     });
 
     const result = await handler({ args: "" });
 
-    // E.1.1 has no specific re-verify logic, defaults to passed=false
-    // So treatment should proceed, not short-circuit to "resolved"
     expect(result.text).not.toContain("No action needed");
+    expect(result.text).toBeDefined();
     const { runTreatmentLoop } = await import("../treatment-loop.js");
     expect(runTreatmentLoop).toHaveBeenCalled();
   });
 });
 
-describe("Refactored reVerify with dynamic verification", () => {
+describe("reVerify with dynamic verification", () => {
   let api: PluginApi;
   let client: ReturnType<typeof createMockClient>;
   let handler: (ctx: CommandContext) => Promise<{ text: string }>;
@@ -247,7 +302,7 @@ describe("Refactored reVerify with dynamic verification", () => {
     handler = getClinicHandler(api, client);
   });
 
-  it("CFG.* codes still use fast-path without backend verify call", async () => {
+  it("calls backend verify for all disease codes", async () => {
     client.diagnose.mockResolvedValue({
       sessionId: "sess-cfg",
       diagnosis: {
@@ -261,30 +316,37 @@ describe("Refactored reVerify with dynamic verification", () => {
       treatmentPlan: [
         { id: "step_1", action: "prompt_user", description: "Provide key", requiresUserInput: true },
       ],
+      checks: [],
+      fixes: [],
     });
 
-    // Config evidence shows key present (resolved)
-    const { collectConfigEvidence } = await import("../evidence.js");
-    (collectConfigEvidence as ReturnType<typeof vi.fn>).mockReturnValue({
-      type: "config",
-      apiKey: { masked: "sk-ant-a...xxxx", provider: "anthropic" },
+    // Backend verify returns steps that pass → resolved
+    client.verify.mockResolvedValue({
+      diseaseCode: "CFG.1.2",
+      diseaseName: "API Key Missing",
+      steps: [{
+        id: "v1", type: "check_config", description: "Check API key",
+        instruction: "Check key", confidence: "high",
+        params: { target: "apiKey", expect: "present" },
+        successCondition: "key present",
+      }],
+    });
+
+    const { executeVerificationPlan } = await import("../verification-executor.js");
+    (executeVerificationPlan as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      passed: true,
+      results: [{ step: { type: "check_config", description: "Check API key" }, passed: true }],
     });
 
     await handler({ args: "" });
 
-    // verify() on the client should NOT have been called for CFG.* codes
-    expect(client.treat).not.toHaveBeenCalled();
-    // If verify method exists, it should not be called for CFG codes
-    if (client.verify) {
-      expect(client.verify).not.toHaveBeenCalled();
-    }
+    // verify() IS called for all codes now (including CFG)
+    expect(client.verify).toHaveBeenCalledWith("CFG.1.2", []);
   });
 
-  it("non-CFG codes call backend verify and proceed when all steps pass", async () => {
-    // This test will work once reVerify is refactored to call client.verify
-    // for non-CFG codes. For now it documents the expected behavior.
+  it("falls through to connectivity fallback when backend verify returns no steps", async () => {
     client.diagnose.mockResolvedValue({
-      sessionId: "sess-non-cfg",
+      sessionId: "sess-empty",
       diagnosis: {
         icd_ai_code: "E.1.1",
         name: "Infinite Loop",
@@ -296,28 +358,34 @@ describe("Refactored reVerify with dynamic verification", () => {
       treatmentPlan: [
         { id: "step_1", action: "report", description: "Report loop", requiresUserInput: false },
       ],
+      checks: [],
+      fixes: [],
     });
 
-    // If client.verify exists (after task #8), mock it to return a passing plan
-    if (client.verify) {
-      (client.verify as ReturnType<typeof vi.fn>).mockResolvedValue({
-        diseaseCode: "E.1.1",
-        steps: [
-          { type: "check_logs", description: "Check for loop patterns", pattern: "loop", expect: "absent" },
-        ],
-      });
-    }
+    // Backend verify returns no steps
+    client.verify.mockResolvedValue({
+      diseaseCode: "E.1.1",
+      diseaseName: "Infinite Loop",
+      steps: [],
+    });
+
+    // Connectivity fallback: all providers ok → pre-verify passes → resolved
+    const { collectConnectivityEvidence } = await import("../evidence.js");
+    (collectConnectivityEvidence as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      type: "connectivity",
+      providers: [
+        { name: "anthropic", endpoint: "https://api.anthropic.com", reachable: true, authStatus: "ok" },
+      ],
+    });
 
     const result = await handler({ args: "" });
 
-    // Currently: E.1.1 defaults to passed=false, proceeds to treatment
-    // After refactor: should call backend verify, execute plan, and act on result
-    expect(result.text).toBeDefined();
-    const { runTreatmentLoop } = await import("../treatment-loop.js");
-    expect(runTreatmentLoop).toHaveBeenCalled();
+    // Should resolve since connectivity passes
+    expect(result.text).toContain("resolved");
+    expect(client.verify).toHaveBeenCalled();
   });
 
-  it("falls through to treatment when backend verify endpoint is unreachable", async () => {
+  it("falls through to connectivity fallback when backend verify is unreachable", async () => {
     client.diagnose.mockResolvedValue({
       sessionId: "sess-unreachable",
       diagnosis: {
@@ -331,50 +399,26 @@ describe("Refactored reVerify with dynamic verification", () => {
       treatmentPlan: [
         { id: "step_1", action: "report", description: "Report loop", requiresUserInput: false },
       ],
+      checks: [],
+      fixes: [],
     });
 
-    // If verify method exists, mock it to throw (backend unreachable)
-    if (client.verify) {
-      (client.verify as ReturnType<typeof vi.fn>).mockRejectedValue(
-        new Error("ECONNREFUSED"),
-      );
-    }
+    // Backend verify throws
+    client.verify.mockRejectedValue(new Error("ECONNREFUSED"));
 
-    const result = await handler({ args: "" });
-
-    // Should NOT block on verification failure — proceed to treatment
-    expect(result.text).toBeDefined();
-    expect(result.text).not.toContain("ECONNREFUSED");
-    const { runTreatmentLoop } = await import("../treatment-loop.js");
-    expect(runTreatmentLoop).toHaveBeenCalled();
-  });
-
-  it("returns resolved when non-CFG verification plan passes all steps", async () => {
-    // This test exercises the full integration once dynamic verification is implemented.
-    // For now, with the current reVerify default returning passed=false for non-CFG,
-    // this test documents the expected post-refactor behavior.
-    client.diagnose.mockResolvedValue({
-      sessionId: "sess-verified",
-      diagnosis: {
-        icd_ai_code: "C.1.1",
-        name: "Cost Explosion",
-        confidence: 0.85,
-        severity: "High",
-        reasoning: "Token spend is abnormally high",
-      },
-      differential: [],
-      treatmentPlan: [
-        { id: "step_1", action: "report", description: "Report cost issue", requiresUserInput: false },
+    // Connectivity fallback: provider unreachable → treatment proceeds
+    const { collectConnectivityEvidence } = await import("../evidence.js");
+    (collectConnectivityEvidence as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      type: "connectivity",
+      providers: [
+        { name: "anthropic", endpoint: "https://api.anthropic.com", reachable: false, error: "ECONNREFUSED" },
       ],
     });
 
-    // After refactor: client.verify would return a plan, executor runs it, all pass
-    // → reVerify returns passed=true → "resolved" message
-    // Current behavior: falls through to treatment (passed=false default)
-
     const result = await handler({ args: "" });
+
     expect(result.text).toBeDefined();
-    // Current: proceeds to treatment
+    expect(result.text).not.toContain("ECONNREFUSED");
     const { runTreatmentLoop } = await import("../treatment-loop.js");
     expect(runTreatmentLoop).toHaveBeenCalled();
   });

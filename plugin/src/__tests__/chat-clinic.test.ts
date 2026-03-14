@@ -58,10 +58,9 @@ vi.mock("../notifier.js", () => ({
   })),
 }));
 
-// Mock user-guides
-vi.mock("../user-guides.js", () => ({
-  getUserGuide: vi.fn().mockReturnValue("Follow the guide."),
-  getKeyLengthGuide: vi.fn().mockReturnValue("Key length info."),
+// Mock verification-executor
+vi.mock("../verification-executor.js", () => ({
+  executeVerificationPlan: vi.fn().mockResolvedValue({ passed: true, results: [] }),
 }));
 
 // ─── Helpers ─────────────────────────────────────────────────────
@@ -105,9 +104,9 @@ function makeDiagnosisResponse(overrides: Partial<DiagnosisResponse> = {}): Diag
       reasoning: "No API key found in config.",
     },
     differential: [],
-    treatmentPlan: [
-      { id: "step_1", action: "prompt_user", description: "Ask for key", requiresUserInput: true },
-    ],
+    treatmentPlan: [],
+    checks: [],
+    fixes: [],
     summary: "Missing API key",
     ...overrides,
   };
@@ -124,27 +123,50 @@ beforeEach(() => {
   mockFetch.mockResolvedValue({ ok: true, status: 200 });
 });
 
-describe("/clinic fresh diagnosis with pre-verification", () => {
-  it("returns healthy when backend diagnoses an issue but reVerify shows it is already resolved", async () => {
-    // Scenario: Backend says CFG.1.2 (API Key Missing), but reVerify finds the key is now present.
-    // The reVerify for CFG.1.2 calls collectConfigEvidence and checks apiKey presence.
-    const { collectConfigEvidence } = await import("../evidence.js");
+describe("/clinic fresh diagnosis with checks and fixes", () => {
+  it("shows compact output with checks and fixes when backend returns them", async () => {
     const diagnoseMock = vi.spyOn(ClawClinicClient.prototype, "diagnose");
+    const verifyMock = vi.spyOn(ClawClinicClient.prototype, "verify");
+    const { collectConnectivityEvidence } = await import("../evidence.js");
 
-    // Backend returns a diagnosis of "API Key Missing"
+    // Backend verify returns no steps (so reVerify falls through to connectivity fallback)
+    verifyMock.mockResolvedValueOnce({ diseaseCode: "CFG.3.1", diseaseName: "Auth Failure", steps: [] });
+
+    // Connectivity fallback: auth still failing (issue is active)
+    (collectConnectivityEvidence as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      providers: [
+        { name: "anthropic", endpoint: "https://api.anthropic.com", reachable: true, authStatus: "failed", authStatusCode: 401 },
+      ],
+    });
+
     diagnoseMock.mockResolvedValueOnce(makeDiagnosisResponse({
       diagnosis: {
-        icd_ai_code: "CFG.1.2",
-        name: "API Key Missing",
-        confidence: 0.95,
+        icd_ai_code: "CFG.3.1",
+        name: "Auth Failure",
+        confidence: 0.9,
         severity: "Critical",
-        reasoning: "No API key found.",
+        reasoning: "API key rejected by provider.",
       },
+      checks: [
+        { type: "check_connectivity", target: "anthropic", expect: "reachable", label: "Anthropic API reachable" },
+      ],
+      fixes: [
+        { label: "Paste new key", description: "Paste your API key here" },
+        { label: "Run config command", command: "openclaw config set anthropic.apiKey YOUR_KEY", description: "Set key via CLI" },
+      ],
     }));
 
-    // But when reVerify runs collectConfigEvidence, the key IS present (user fixed it)
-    (collectConfigEvidence as ReturnType<typeof vi.fn>).mockReturnValueOnce({
-      apiKey: { masked: "sk-ant-a...BCDE", provider: "anthropic" },
+    // Mock executeVerificationPlan for the checks
+    const { executeVerificationPlan } = await import("../verification-executor.js");
+    (executeVerificationPlan as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      passed: false,
+      results: [
+        {
+          step: { type: "check_connectivity", description: "Anthropic API reachable", target: "anthropic", expect: "reachable" },
+          passed: false,
+          error: "auth failed (HTTP 401)",
+        },
+      ],
     });
 
     const api = createMockApi();
@@ -153,24 +175,66 @@ describe("/clinic fresh diagnosis with pre-verification", () => {
 
     const result = await handler({ args: "" });
 
-    // Should indicate healthy / resolved — NOT show treatment plan
-    expect(result.text).toMatch(/healthy|resolved|no issues/i);
-    // Should NOT contain treatment instructions
-    expect(result.text).not.toContain("prompt_user");
-    expect(result.text).not.toContain("Follow the guide");
+    expect(result.text).toContain("**Auth Failure**");
+    expect(result.text).toContain("Checked:");
+    expect(result.text).toContain("\u2717 Anthropic API reachable");
+    expect(result.text).toContain("To fix");
+    expect(result.text).toContain("1. Paste new key");
+    expect(result.text).toContain("2. Run config command");
+    expect(result.text).toContain("Reply 1-2 to apply");
 
     diagnoseMock.mockRestore();
+    verifyMock.mockRestore();
   });
 
-  it("shows diagnosis and treatment when reVerify confirms the issue is still active", async () => {
-    // Scenario: Backend says CFG.1.2, reVerify confirms key is still missing.
-    const { collectConfigEvidence } = await import("../evidence.js");
+  it("saves fixes in session for later selection", async () => {
+    const { saveSession } = await import("../session-store.js");
+    const { collectConnectivityEvidence } = await import("../evidence.js");
+    const diagnoseMock = vi.spyOn(ClawClinicClient.prototype, "diagnose");
+    const verifyMock = vi.spyOn(ClawClinicClient.prototype, "verify");
+
+    verifyMock.mockResolvedValueOnce({ diseaseCode: "CFG.1.2", diseaseName: "API Key Missing", steps: [] });
+
+    // Connectivity fallback: issue still active
+    (collectConnectivityEvidence as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      providers: [
+        { name: "anthropic", endpoint: "https://api.anthropic.com", reachable: true, authStatus: "failed", authStatusCode: 401 },
+      ],
+    });
+
+    diagnoseMock.mockResolvedValueOnce(makeDiagnosisResponse({
+      fixes: [
+        { label: "Add key", command: "openclaw config set anthropic.apiKey KEY", description: "Add your key" },
+      ],
+    }));
+
+    const api = createMockApi();
+    const client = createMockClient();
+    const handler = getClinicHandler(api, client);
+
+    await handler({ args: "" });
+
+    expect(saveSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pendingStepId: "fix_selection",
+        pendingFixes: [{ label: "Add key", command: "openclaw config set anthropic.apiKey KEY", description: "Add your key" }],
+      }),
+    );
+
+    diagnoseMock.mockRestore();
+    verifyMock.mockRestore();
+  });
+
+  it("returns healthy when no diagnosis", async () => {
     const diagnoseMock = vi.spyOn(ClawClinicClient.prototype, "diagnose");
 
-    diagnoseMock.mockResolvedValueOnce(makeDiagnosisResponse());
-
-    // reVerify: collectConfigEvidence returns no apiKey → issue still active
-    (collectConfigEvidence as ReturnType<typeof vi.fn>).mockReturnValueOnce({});
+    diagnoseMock.mockResolvedValueOnce(makeDiagnosisResponse({
+      diagnosis: null,
+      treatmentPlan: [],
+      checks: [],
+      fixes: [],
+      summary: "No diagnosis",
+    }));
 
     const api = createMockApi();
     const client = createMockClient();
@@ -178,15 +242,24 @@ describe("/clinic fresh diagnosis with pre-verification", () => {
 
     const result = await handler({ args: "" });
 
-    // Should show the diagnosis / treatment — NOT healthy
-    expect(result.text).toMatch(/API Key Missing|guide|done/i);
-    expect(result.text).not.toMatch(/^Your agent appears healthy/);
+    expect(result.text).toMatch(/healthy|no issues/i);
 
     diagnoseMock.mockRestore();
   });
 
-  it("proceeds to treatment for unknown disease codes (reVerify default returns not passed)", async () => {
+  it("falls back to treatment loop when no checks/fixes", async () => {
+    const { collectConnectivityEvidence } = await import("../evidence.js");
     const diagnoseMock = vi.spyOn(ClawClinicClient.prototype, "diagnose");
+    const verifyMock = vi.spyOn(ClawClinicClient.prototype, "verify");
+
+    verifyMock.mockResolvedValueOnce({ diseaseCode: "E.1.1", diseaseName: "Infinite Loop", steps: [] });
+
+    // Connectivity fallback: provider unreachable (issue still active)
+    (collectConnectivityEvidence as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      providers: [
+        { name: "anthropic", endpoint: "https://api.anthropic.com", reachable: false, error: "timeout" },
+      ],
+    });
 
     diagnoseMock.mockResolvedValueOnce(makeDiagnosisResponse({
       diagnosis: {
@@ -196,6 +269,8 @@ describe("/clinic fresh diagnosis with pre-verification", () => {
         severity: "High",
         reasoning: "Agent stuck in a loop.",
       },
+      checks: [],
+      fixes: [],
       treatmentPlan: [
         { id: "step_1", action: "report", description: "Report loop", requiresUserInput: false },
       ],
@@ -207,51 +282,152 @@ describe("/clinic fresh diagnosis with pre-verification", () => {
 
     const result = await handler({ args: "" });
 
-    // reVerify returns passed=false for unknown codes, so treatment proceeds
+    // Should use fallback treatment loop (runTreatmentLoop mock returns resolved)
     expect(result.text).toMatch(/Fixed|Treatment/i);
-    expect(result.text).not.toContain("No action needed");
 
     diagnoseMock.mockRestore();
+    verifyMock.mockRestore();
   });
+});
 
-  it("skips reVerify when backend returns no diagnosis", async () => {
-    // Scenario: Backend finds nothing wrong — diagnosis is null.
-    const diagnoseMock = vi.spyOn(ClawClinicClient.prototype, "diagnose");
+describe("/clinic follow-up with numeric fix selection", () => {
+  it("selects a fix by number and shows the command", async () => {
+    const { loadSession, saveSession } = await import("../session-store.js");
 
-    diagnoseMock.mockResolvedValueOnce(makeDiagnosisResponse({
-      diagnosis: null,
-      treatmentPlan: [],
-      summary: "No diagnosis",
-    }));
+    const pendingSession = {
+      sessionId: "sess-1",
+      pendingStepId: "fix_selection",
+      pendingPrompt: "Reply 1-2",
+      diagnosisCode: "CFG.3.1",
+      diagnosisName: "Auth Failure",
+      createdAt: new Date().toISOString(),
+      pendingFixes: [
+        { label: "Paste new key", description: "Paste your API key" },
+        { label: "Run config command", command: "openclaw config set anthropic.apiKey KEY", description: "Set via CLI" },
+      ],
+    };
+
+    (loadSession as ReturnType<typeof vi.fn>).mockResolvedValueOnce(pendingSession);
 
     const api = createMockApi();
     const client = createMockClient();
     const handler = getClinicHandler(api, client);
 
-    const result = await handler({ args: "" });
+    const result = await handler({ args: "2" });
 
-    // Should return the existing "healthy" message — no reVerify needed
-    expect(result.text).toMatch(/healthy|no issues/i);
+    expect(result.text).toContain("openclaw config set anthropic.apiKey KEY");
+    expect(result.text).toContain("/clinic done");
 
-    diagnoseMock.mockRestore();
+    // Should save session for re-verification
+    expect(saveSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pendingStepId: "awaiting_fix",
+      }),
+    );
   });
 
-  it("returns healthy message for CFG.3.1 when auth is no longer failing", async () => {
-    // Scenario: Backend diagnoses auth failure, but re-check shows auth is now OK.
+  it("selects a fix without a command and shows description", async () => {
+    const { loadSession } = await import("../session-store.js");
+
+    const pendingSession = {
+      sessionId: "sess-1",
+      pendingStepId: "fix_selection",
+      pendingPrompt: "Reply 1",
+      diagnosisCode: "CFG.3.1",
+      diagnosisName: "Auth Failure",
+      createdAt: new Date().toISOString(),
+      pendingFixes: [
+        { label: "Paste new key", description: "Go to console.anthropic.com and create a new key, then paste it here." },
+      ],
+    };
+
+    (loadSession as ReturnType<typeof vi.fn>).mockResolvedValueOnce(pendingSession);
+
+    const api = createMockApi();
+    const client = createMockClient();
+    const handler = getClinicHandler(api, client);
+
+    const result = await handler({ args: "1" });
+
+    expect(result.text).toContain("Go to console.anthropic.com");
+    expect(result.text).toContain("/clinic done");
+  });
+
+  it("rejects out-of-range fix number", async () => {
+    const { loadSession } = await import("../session-store.js");
+
+    const pendingSession = {
+      sessionId: "sess-1",
+      pendingStepId: "fix_selection",
+      pendingPrompt: "Reply 1-2",
+      diagnosisCode: "CFG.3.1",
+      diagnosisName: "Auth Failure",
+      createdAt: new Date().toISOString(),
+      pendingFixes: [
+        { label: "Fix A", description: "desc A" },
+        { label: "Fix B", description: "desc B" },
+      ],
+    };
+
+    (loadSession as ReturnType<typeof vi.fn>).mockResolvedValueOnce(pendingSession);
+
+    const api = createMockApi();
+    const client = createMockClient();
+    const handler = getClinicHandler(api, client);
+
+    const result = await handler({ args: "5" });
+
+    expect(result.text).toBe("Pick 1-2");
+  });
+
+  it("shows help text for unknown input when fixes are pending", async () => {
+    const { loadSession } = await import("../session-store.js");
+
+    const pendingSession = {
+      sessionId: "sess-1",
+      pendingStepId: "fix_selection",
+      pendingPrompt: "Reply 1-2",
+      diagnosisCode: "CFG.3.1",
+      diagnosisName: "Auth Failure",
+      createdAt: new Date().toISOString(),
+      pendingFixes: [
+        { label: "Fix A", description: "desc A" },
+        { label: "Fix B", description: "desc B" },
+      ],
+    };
+
+    (loadSession as ReturnType<typeof vi.fn>).mockResolvedValueOnce(pendingSession);
+
+    const api = createMockApi();
+    const client = createMockClient();
+    const handler = getClinicHandler(api, client);
+
+    const result = await handler({ args: "what do I do" });
+
+    expect(result.text).toContain("Reply 1-2 to pick a fix");
+    expect(result.text).toContain("/clinic done");
+  });
+});
+
+describe("/clinic done re-verification", () => {
+  it("clears session when re-verify passes on /clinic done", async () => {
+    const { loadSession, clearSession } = await import("../session-store.js");
     const { collectConnectivityEvidence } = await import("../evidence.js");
-    const diagnoseMock = vi.spyOn(ClawClinicClient.prototype, "diagnose");
+    const verifyMock = vi.spyOn(ClawClinicClient.prototype, "verify");
 
-    diagnoseMock.mockResolvedValueOnce(makeDiagnosisResponse({
-      diagnosis: {
-        icd_ai_code: "CFG.3.1",
-        name: "Auth Failure",
-        confidence: 0.9,
-        severity: "Critical",
-        reasoning: "API key rejected by provider.",
-      },
-    }));
+    // Backend verify returns no steps, so fallback connectivity check runs
+    verifyMock.mockResolvedValueOnce({ diseaseCode: "CFG.3.1", diseaseName: "Auth Failure", steps: [], });
 
-    // reVerify for CFG.3.1 calls collectConnectivityEvidence — no failed providers
+    const pendingSession = {
+      sessionId: "sess-1",
+      pendingStepId: "awaiting_fix",
+      pendingPrompt: "openclaw config set ...",
+      diagnosisCode: "CFG.3.1",
+      diagnosisName: "Auth Failure",
+      createdAt: new Date().toISOString(),
+    };
+
+    (loadSession as ReturnType<typeof vi.fn>).mockResolvedValueOnce(pendingSession);
     (collectConnectivityEvidence as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       providers: [
         { name: "anthropic", endpoint: "https://api.anthropic.com", reachable: true, authStatus: "ok" },
@@ -262,32 +438,32 @@ describe("/clinic fresh diagnosis with pre-verification", () => {
     const client = createMockClient();
     const handler = getClinicHandler(api, client);
 
-    const result = await handler({ args: "" });
+    const result = await handler({ args: "done" });
 
-    expect(result.text).toMatch(/healthy|resolved|no issues/i);
+    expect(result.text).toContain("Auth Failure");
+    expect(result.text).toContain("Fixed");
+    expect(clearSession).toHaveBeenCalled();
 
-    diagnoseMock.mockRestore();
+    verifyMock.mockRestore();
   });
 
-  it("shows diagnosis for CFG.3.1 when auth is still failing", async () => {
+  it("shows still-detected when re-verify fails on /clinic done", async () => {
+    const { loadSession } = await import("../session-store.js");
     const { collectConnectivityEvidence } = await import("../evidence.js");
-    const diagnoseMock = vi.spyOn(ClawClinicClient.prototype, "diagnose");
+    const verifyMock = vi.spyOn(ClawClinicClient.prototype, "verify");
 
-    diagnoseMock.mockResolvedValueOnce(makeDiagnosisResponse({
-      diagnosis: {
-        icd_ai_code: "CFG.3.1",
-        name: "Auth Failure",
-        confidence: 0.9,
-        severity: "Critical",
-        reasoning: "API key rejected by provider.",
-      },
-      treatmentPlan: [
-        { id: "step_1", action: "validate_config", description: "Inspect key", requiresUserInput: false },
-        { id: "step_2", action: "prompt_user", description: "Get new key", requiresUserInput: true },
-      ],
-    }));
+    verifyMock.mockResolvedValueOnce({ diseaseCode: "CFG.3.1", diseaseName: "Auth Failure", steps: [], });
 
-    // reVerify: auth still failing
+    const pendingSession = {
+      sessionId: "sess-1",
+      pendingStepId: "awaiting_fix",
+      pendingPrompt: "openclaw config set ...",
+      diagnosisCode: "CFG.3.1",
+      diagnosisName: "Auth Failure",
+      createdAt: new Date().toISOString(),
+    };
+
+    (loadSession as ReturnType<typeof vi.fn>).mockResolvedValueOnce(pendingSession);
     (collectConnectivityEvidence as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       providers: [
         { name: "anthropic", endpoint: "https://api.anthropic.com", reachable: true, authStatus: "failed", authStatusCode: 401 },
@@ -298,67 +474,77 @@ describe("/clinic fresh diagnosis with pre-verification", () => {
     const client = createMockClient();
     const handler = getClinicHandler(api, client);
 
-    const result = await handler({ args: "" });
+    const result = await handler({ args: "done" });
 
-    // Should proceed with diagnosis/treatment, not return healthy
-    expect(result.text).toMatch(/Auth Failure|guide|done/i);
-    expect(result.text).not.toMatch(/^Your agent appears healthy/);
+    expect(result.text).toContain("Auth Failure");
+    expect(result.text).toContain("still detected");
 
-    diagnoseMock.mockRestore();
+    verifyMock.mockRestore();
   });
+});
 
-  it("returns healthy for CFG.2.1 when endpoint is now reachable", async () => {
-    const { collectConnectivityEvidence } = await import("../evidence.js");
-    const diagnoseMock = vi.spyOn(ClawClinicClient.prototype, "diagnose");
+describe("/clinic follow-up with pasted API key", () => {
+  it("accepts a valid pasted API key and verifies it", async () => {
+    const { loadSession, clearSession } = await import("../session-store.js");
+    const { detectProvider, validateKeyFormat, writeApiKeyToAuthProfiles, collectConnectivityEvidence } = await import("../evidence.js");
+    const verifyMock = vi.spyOn(ClawClinicClient.prototype, "verify");
+    const treatMock = vi.spyOn(ClawClinicClient.prototype, "treat");
 
-    diagnoseMock.mockResolvedValueOnce(makeDiagnosisResponse({
-      diagnosis: {
-        icd_ai_code: "CFG.2.1",
-        name: "Endpoint Misconfiguration",
-        confidence: 0.85,
-        severity: "High",
-        reasoning: "Endpoint unreachable.",
-      },
-    }));
+    verifyMock.mockResolvedValueOnce({ diseaseCode: "CFG.3.1", diseaseName: "Auth Failure", steps: [], });
+    treatMock.mockResolvedValueOnce({ status: "resolved", message: "Done", sessionId: "sess-1" });
 
-    // reVerify: all providers reachable now
+    const pendingSession = {
+      sessionId: "sess-1",
+      pendingStepId: "step_1",
+      pendingPrompt: "Paste your key",
+      diagnosisCode: "CFG.3.1",
+      diagnosisName: "Auth Failure",
+      createdAt: new Date().toISOString(),
+    };
+
+    (loadSession as ReturnType<typeof vi.fn>).mockResolvedValueOnce(pendingSession);
+    (detectProvider as ReturnType<typeof vi.fn>).mockReturnValueOnce("anthropic");
+    (validateKeyFormat as ReturnType<typeof vi.fn>).mockReturnValueOnce({ valid: true });
+    (writeApiKeyToAuthProfiles as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ success: true });
+    // Re-verify connectivity passes
     (collectConnectivityEvidence as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      providers: [
-        { name: "anthropic", endpoint: "https://api.anthropic.com", reachable: true },
-      ],
+      providers: [{ name: "anthropic", endpoint: "https://api.anthropic.com", reachable: true, authStatus: "ok" }],
     });
 
     const api = createMockApi();
     const client = createMockClient();
     const handler = getClinicHandler(api, client);
 
-    const result = await handler({ args: "" });
+    const result = await handler({ args: "sk-ant-api01-testkey" });
 
-    expect(result.text).toMatch(/healthy|resolved|no issues/i);
+    expect(result.text).toContain("working");
+    expect(result.text).toContain("fixed");
+    expect(clearSession).toHaveBeenCalled();
 
-    diagnoseMock.mockRestore();
+    verifyMock.mockRestore();
+    treatMock.mockRestore();
   });
+});
 
-  it("returns healthy for CFG.1.1 when key format is now valid", async () => {
-    const { extractApiKey, validateKeyFormat } = await import("../evidence.js");
+describe("/clinic pre-verification", () => {
+  it("returns resolved when reVerify shows issue already fixed (no symptoms)", async () => {
     const diagnoseMock = vi.spyOn(ClawClinicClient.prototype, "diagnose");
+    const verifyMock = vi.spyOn(ClawClinicClient.prototype, "verify");
+    const { executeVerificationPlan } = await import("../verification-executor.js");
 
-    diagnoseMock.mockResolvedValueOnce(makeDiagnosisResponse({
-      diagnosis: {
-        icd_ai_code: "CFG.1.1",
-        name: "API Key Format Error",
-        confidence: 0.8,
-        severity: "High",
-        reasoning: "Key format unrecognized.",
-      },
-    }));
+    // Backend verify returns steps that pass
+    verifyMock.mockResolvedValueOnce({
+      diseaseCode: "CFG.1.2",
+      diseaseName: "API Key Missing",
+      steps: [{ id: "v1", type: "check_config", description: "Check API key", instruction: "Verify key exists", confidence: "high" as const, params: { target: "apiKey", expect: "present" }, successCondition: "key present" }],
+    });
 
-    // extractApiKey is called once in runDiagnosis (line 205, for provider detection)
-    // and once in reVerify for CFG.1.1 — need to provide values for both calls
-    const validKey = "sk-ant-api01-" + "a".repeat(80);
-    (extractApiKey as ReturnType<typeof vi.fn>).mockReturnValueOnce(validKey); // provider detection
-    (extractApiKey as ReturnType<typeof vi.fn>).mockReturnValueOnce(validKey); // reVerify
-    (validateKeyFormat as ReturnType<typeof vi.fn>).mockReturnValueOnce({ valid: true, detectedProvider: "anthropic" });
+    (executeVerificationPlan as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      passed: true,
+      results: [{ step: { type: "check_config", description: "Check API key" }, passed: true }],
+    });
+
+    diagnoseMock.mockResolvedValueOnce(makeDiagnosisResponse());
 
     const api = createMockApi();
     const client = createMockClient();
@@ -366,7 +552,29 @@ describe("/clinic fresh diagnosis with pre-verification", () => {
 
     const result = await handler({ args: "" });
 
-    expect(result.text).toMatch(/healthy|resolved|no issues/i);
+    expect(result.text).toMatch(/resolved|no action/i);
+
+    diagnoseMock.mockRestore();
+    verifyMock.mockRestore();
+  });
+
+  it("skips reVerify shortcut when backend returns no diagnosis", async () => {
+    const diagnoseMock = vi.spyOn(ClawClinicClient.prototype, "diagnose");
+
+    diagnoseMock.mockResolvedValueOnce(makeDiagnosisResponse({
+      diagnosis: null,
+      treatmentPlan: [],
+      checks: [],
+      fixes: [],
+    }));
+
+    const api = createMockApi();
+    const client = createMockClient();
+    const handler = getClinicHandler(api, client);
+
+    const result = await handler({ args: "" });
+
+    expect(result.text).toMatch(/healthy|no issues/i);
 
     diagnoseMock.mockRestore();
   });

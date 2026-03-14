@@ -34,6 +34,8 @@ describe("API key diagnosis -> treatment end-to-end flow", () => {
         severity: "Critical",
         reasoning: "No API key is configured.",
         differential: [],
+        checks: [],
+        fixes: [],
       });
 
       // Step 1: Diagnose
@@ -96,6 +98,8 @@ describe("API key diagnosis -> treatment end-to-end flow", () => {
         severity: "High",
         reasoning: "The API key does not match any known provider format.",
         differential: [],
+        checks: [],
+        fixes: [],
       });
 
       const { status, json: diagRes } = await post("/diagnose", {
@@ -148,6 +152,8 @@ describe("API key diagnosis -> treatment end-to-end flow", () => {
         severity: "High",
         reasoning: "The API key is being rejected by the provider.",
         differential: [],
+        checks: [],
+        fixes: [],
       });
 
       const { status, json: diagRes } = await post("/diagnose", {
@@ -215,6 +221,8 @@ describe("API key diagnosis -> treatment end-to-end flow", () => {
         severity: "Critical",
         reasoning: "No API key is configured.",
         differential: [],
+        checks: [],
+        fixes: [],
       });
 
       const { json: diagRes } = await post("/diagnose", {

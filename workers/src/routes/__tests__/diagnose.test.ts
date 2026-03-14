@@ -34,6 +34,12 @@ describe("POST /diagnose", () => {
       severity: "Critical",
       reasoning: "No API key is configured.",
       differential: [],
+      checks: [
+        { type: "check_config", target: "apiKey", expect: "present", label: "API key configured" },
+      ],
+      fixes: [
+        { label: "Set API key", command: "openclaw config set apiKey sk-ant-...", description: "Configure your Anthropic API key" },
+      ],
     });
 
     const { status, json } = await postDiagnose({
@@ -48,6 +54,10 @@ describe("POST /diagnose", () => {
     expect(status).toBe(200);
     expect(json.diagnosis.icd_ai_code).toBe("CFG.1.2");
     expect(json.diagnosis.name).toBe("API Key Missing");
+    expect(json.checks).toBeDefined();
+    expect(json.checks).toHaveLength(1);
+    expect(json.fixes).toBeDefined();
+    expect(json.fixes).toHaveLength(1);
     expect(mockAiDiagnose).toHaveBeenCalledOnce();
   });
 
@@ -59,6 +69,12 @@ describe("POST /diagnose", () => {
       severity: "Critical",
       reasoning: "API key rejected by provider.",
       differential: [],
+      checks: [
+        { type: "check_connectivity", target: "https://api.anthropic.com", expect: "reachable", label: "Anthropic API reachable" },
+      ],
+      fixes: [
+        { label: "Regenerate API key", command: "openclaw auth refresh", description: "Refresh your authentication credentials" },
+      ],
     });
 
     const { status, json } = await postDiagnose({
@@ -74,6 +90,8 @@ describe("POST /diagnose", () => {
 
     expect(status).toBe(200);
     expect(json.diagnosis.icd_ai_code).toBe("CFG.3.1");
+    expect(json.checks).toBeDefined();
+    expect(json.fixes).toBeDefined();
     expect(mockAiDiagnose).toHaveBeenCalledOnce();
   });
 
@@ -85,6 +103,12 @@ describe("POST /diagnose", () => {
       severity: "Moderate",
       reasoning: "The configured endpoint URL is invalid.",
       differential: [],
+      checks: [
+        { type: "check_config", target: "endpoint.url", expect: "valid_url", label: "Endpoint URL valid" },
+      ],
+      fixes: [
+        { label: "Reset endpoint", command: "openclaw config set endpoint.url https://api.anthropic.com", description: "Set endpoint to default Anthropic URL" },
+      ],
     });
 
     const { status, json } = await postDiagnose({
@@ -98,6 +122,8 @@ describe("POST /diagnose", () => {
 
     expect(status).toBe(200);
     expect(json.diagnosis.icd_ai_code).toBe("CFG.2.1");
+    expect(json.checks).toBeDefined();
+    expect(json.fixes).toBeDefined();
     expect(mockAiDiagnose).toHaveBeenCalledOnce();
   });
 
@@ -112,6 +138,12 @@ describe("POST /diagnose", () => {
       reasoning: "Agent cannot write files due to permission restrictions.",
       differential: [
         { icd_ai_code: "O.1.1", name: "Tool Calling Fracture", confidence: 0.25 },
+      ],
+      checks: [
+        { type: "check_config", target: "tools.exec.restricted", expect: "false", label: "Tool execution unrestricted" },
+      ],
+      fixes: [
+        { label: "Allow tool execution", command: "openclaw config set tools.exec.restricted false", description: "Disable tool restrictions" },
       ],
     });
 
@@ -128,6 +160,8 @@ describe("POST /diagnose", () => {
     expect(json.differential[0].icd_ai_code).toBe("O.1.1");
     expect(json.treatmentPlan).toBeDefined();
     expect(json.isNovelCode).toBe(false);
+    expect(json.checks).toHaveLength(1);
+    expect(json.fixes).toHaveLength(1);
     expect(mockAiDiagnose).toHaveBeenCalledOnce();
   });
 
@@ -139,6 +173,12 @@ describe("POST /diagnose", () => {
       severity: "Moderate",
       reasoning: "Agent has consumed its entire context window.",
       differential: [],
+      checks: [
+        { type: "check_process", target: "openclaw", expect: "running", label: "OpenClaw process running" },
+      ],
+      fixes: [
+        { label: "Reset context window", command: "openclaw context reset", description: "Clear the current context window" },
+      ],
       treatmentSteps: [
         { action: "reset_context", description: "Clear context and restart.", requiresUserInput: false },
         { action: "reduce_input", description: "Reduce input size.", requiresUserInput: true },
@@ -168,6 +208,8 @@ describe("POST /diagnose", () => {
       severity: "Low",
       reasoning: "Unclear symptoms.",
       differential: [],
+      checks: [],
+      fixes: [],
     });
 
     const { status, json } = await postDiagnose({
@@ -198,6 +240,8 @@ describe("POST /diagnose", () => {
     expect(json.diagnosis.icd_ai_code).toBeDefined();
     expect(json.sessionId).toBeDefined();
     expect(json.summary).toBeDefined();
+    expect(json.checks).toEqual([]);
+    expect(json.fixes).toEqual([]);
     expect(mockAiDiagnose).toHaveBeenCalledOnce();
   });
 
@@ -209,6 +253,8 @@ describe("POST /diagnose", () => {
     expect(status).toBe(200);
     expect(json.diagnosis).not.toBeNull();
     expect(json.diagnosis.icd_ai_code).toBeDefined();
+    expect(json.checks).toEqual([]);
+    expect(json.fixes).toEqual([]);
     expect(mockAiDiagnose).toHaveBeenCalledOnce();
   });
 

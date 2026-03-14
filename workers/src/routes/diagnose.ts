@@ -95,6 +95,8 @@ diagnoseRouter.post("/diagnose", async (c) => {
           reasoning: aiResult.reasoning,
         },
         differential: aiResult.differential,
+        checks: aiResult.checks || [],
+        fixes: aiResult.fixes || [],
         treatmentPlan,
         isNovelCode: !knownDisease,
         summary: `Diagnosed ${aiResult.name} (${aiResult.icd_ai_code}) with ${Math.round(aiResult.confidence * 100)}% confidence. ${aiResult.reasoning}`,
@@ -180,6 +182,8 @@ diagnoseRouter.post("/diagnose", async (c) => {
         name: d.disease_name,
         confidence: d.confidence,
       })),
+      checks: [],
+      fixes: [],
       treatmentPlan,
       summary: primary
         ? `Diagnosed ${primary.disease_name} (${primary.icd_ai_code}) with ${Math.round(primary.confidence * 100)}% confidence.`

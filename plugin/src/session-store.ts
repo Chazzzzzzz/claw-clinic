@@ -11,6 +11,7 @@ export interface StoredSession {
   createdAt: string;
   detectedProvider?: string;
   isNovelCode?: boolean;
+  pendingFixes?: Array<{ label: string; command?: string; description: string }>;
 }
 
 const SESSION_DIR = join(homedir(), ".openclaw", "claw-clinic");

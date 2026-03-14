@@ -13,6 +13,8 @@ export interface AIDiagnosisResult {
   reasoning: string;
   differential: Array<{ icd_ai_code: string; name: string; confidence: number }>;
   treatmentSteps?: Array<{ action: string; description: string; requiresUserInput: boolean }>;
+  checks: Array<{ type: string; target: string; expect: string; label: string }>;
+  fixes: Array<{ label: string; command: string; description: string }>;
 }
 
 const SUBMIT_DIAGNOSIS_TOOL: Anthropic.Tool = {
@@ -77,7 +79,34 @@ const SUBMIT_DIAGNOSIS_TOOL: Anthropic.Tool = {
           "Treatment steps if the disease code is NOT in the known catalog. REQUIRED for novel codes — include actionable steps the user can follow to resolve the issue.",
       },
     },
-    required: ["icd_ai_code", "name", "confidence", "severity", "reasoning", "differential"],
+    checks: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          type: { type: "string", enum: ["check_config", "check_connectivity", "check_file", "check_process"] },
+          target: { type: "string" },
+          expect: { type: "string" },
+          label: { type: "string" },
+        },
+        required: ["type", "target", "expect", "label"],
+      },
+      description: "2-5 checks for the plugin to run locally. Each check has a type (what to check), target (config key path, URL, file path, or process name), expect (expected good state like 'present', 'reachable', 'off', or a specific value), and label (human-readable like: sandbox.mode = \"off\").",
+    },
+    fixes: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          label: { type: "string" },
+          command: { type: "string" },
+          description: { type: "string" },
+        },
+        required: ["label", "command", "description"],
+      },
+      description: "2-3 concrete fix options. Each fix has a short label (under 40 chars), the exact terminal command to run (like 'openclaw config set sandbox.mode off'), and a 1-line description of what it does.",
+    },
+    required: ["icd_ai_code", "name", "confidence", "severity", "reasoning", "differential", "checks", "fixes"],
   },
 };
 
@@ -114,6 +143,9 @@ ${prescriptionSummary}
 4. Always provide differential diagnoses — other conditions that could explain the symptoms.
 5. Only include treatment_steps if the diagnosis uses a code NOT in the known catalog above. For novel codes, treatment_steps are REQUIRED — include actionable steps with requires_user_input set correctly.
 6. Call the submit_diagnosis tool with your structured diagnosis. Do NOT respond with plain text.
+7. Keep reasoning to exactly 1 sentence. No paragraphs.
+8. Always include checks — 2-5 things the plugin should verify locally. Use exact config key paths (e.g., "sandbox.mode"), file paths (e.g., "~/.openclaw/openclaw.json"), and endpoint URLs. The label should show what the check verifies in human-readable form.
+9. Always include fixes — 2-3 concrete fix options. Each MUST have a command field with the exact terminal command (prefer "openclaw config set ..." for config changes). Keep labels under 40 chars.
 
 ## Diagnostic Discriminators
 - **Loop vs Hang**: An infinite loop (E.1.1) shows repeated tool calls with identical arguments (toolCallCount high, loopDetected=true). A hang shows a single call that never returns (toolCallCount=0, high latency, 0 tokens produced). Do not confuse waiting-for-response with looping.
@@ -203,6 +235,8 @@ export async function aiDiagnose(
       severity: input.severity as string,
       reasoning: input.reasoning as string,
       differential: (input.differential as Array<{ icd_ai_code: string; name: string; confidence: number }>) || [],
+      checks: (input.checks as Array<{ type: string; target: string; expect: string; label: string }>) || [],
+      fixes: (input.fixes as Array<{ label: string; command: string; description: string }>) || [],
       treatmentSteps: (input.treatment_steps as Array<{ action: string; description: string; requires_user_input: boolean }> | undefined)
         ?.map((s) => ({ action: s.action, description: s.description, requiresUserInput: s.requires_user_input ?? false })),
     };

@@ -99,6 +99,17 @@ export interface DiagnosisResponse {
     confidence: number;
   }>;
   treatmentPlan: TreatmentStep[];
+  checks: Array<{
+    type: "check_config" | "check_connectivity" | "check_file" | "check_process";
+    target: string;
+    expect: string;
+    label: string;
+  }>;
+  fixes: Array<{
+    label: string;
+    command?: string;
+    description: string;
+  }>;
   isNovelCode?: boolean;
   summary: string;
 }
