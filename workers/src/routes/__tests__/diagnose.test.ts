@@ -230,6 +230,17 @@ describe("POST /diagnose", () => {
     expect(json.diagnosis.confidence).toBeGreaterThanOrEqual(0.8);
   });
 
+  it("detects O.4.1 from symptom text alone: 'I can't write files now'", async () => {
+    const { status, json } = await postDiagnose({
+      symptoms: "I can't write files now",
+    });
+
+    expect(status).toBe(200);
+    expect(json.diagnosis).not.toBeNull();
+    expect(json.diagnosis.icd_ai_code).toBe("O.4.1");
+    expect(json.diagnosis.name).toBe("Tool Permission Denial");
+  });
+
   it("does NOT detect O.4.1 when permission score is too low", async () => {
     const { status, json } = await postDiagnose({
       evidence: [

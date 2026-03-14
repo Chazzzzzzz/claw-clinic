@@ -355,6 +355,21 @@ diagnoseRouter.post("/diagnose", async (c) => {
       }
     }
 
+    // Also check the raw symptoms text (user-provided description)
+    if (symptoms) {
+      const symptomsPermissionPatterns = [
+        ...permissionPatterns,
+        /can'?t\s+(write|read|execute|access|open|create|delete)/i,
+        /cannot\s+(write|read|execute|access|open|create|delete)/i,
+        /unable to\s+(write|read|execute|access|open|create|delete)/i,
+        /blocked|forbidden|no access/i,
+      ];
+      if (symptomsPermissionPatterns.some((re) => re.test(symptoms))) {
+        permissionDenialScore += 2;
+        permissionDetails.push(symptoms);
+      }
+    }
+
     // Also check runtime evidence for low tool success rate with permission indicators
     for (const rt of runtimeEvidence) {
       if (rt.recentTraceStats) {

@@ -104,6 +104,12 @@ export function createMinimalSymptomVector(symptomsText: string): SymptomVector 
     sv.tool_success_rate = 0.35;
   }
 
+  // O.4.1 Tool Permission Denial — push tool_success_rate low, error_rate high
+  if (lower.includes("permission") || lower.includes("denied") || lower.includes("can't write") || lower.includes("cannot write") || lower.includes("can't read") || lower.includes("cannot read") || lower.includes("access denied") || lower.includes("not allowed") || lower.includes("restricted") || lower.includes("blocked") || lower.includes("eacces") || lower.includes("sandbox")) {
+    sv.tool_success_rate = 0.3;
+    sv.error_rate = 0.35;
+  }
+
   // Bot / channel not responding
   if (lower.includes("not respond") || lower.includes("no response") || lower.includes("bot offline") || lower.includes("doesn't respond") || lower.includes("channel")) {
     sv.error_rate = 0.3;
