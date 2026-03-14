@@ -1,5 +1,13 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { app } from "../../server.js";
+
+// Mock the AI diagnostician module
+vi.mock("../../ai-diagnostician.js", () => ({
+  aiDiagnose: vi.fn().mockResolvedValue(null),
+}));
+
+import { aiDiagnose } from "../../ai-diagnostician.js";
+const mockAiDiagnose = vi.mocked(aiDiagnose);
 
 // Helper to POST JSON to the app
 async function post(path: string, body: unknown) {
@@ -12,8 +20,22 @@ async function post(path: string, body: unknown) {
 }
 
 describe("API key diagnosis -> treatment end-to-end flow", () => {
+  beforeEach(() => {
+    mockAiDiagnose.mockReset();
+    mockAiDiagnose.mockResolvedValue(null);
+  });
+
   describe("Missing API key flow (CFG.1.2)", () => {
     it("diagnoses, walks through 3 treatment steps, and resolves", async () => {
+      mockAiDiagnose.mockResolvedValueOnce({
+        icd_ai_code: "CFG.1.2",
+        name: "API Key Missing",
+        confidence: 0.95,
+        severity: "Critical",
+        reasoning: "No API key is configured.",
+        differential: [],
+      });
+
       // Step 1: Diagnose
       const { status, json: diagRes } = await post("/diagnose", {
         evidence: [{ type: "config", apiKey: { masked: "(empty)" } }],
@@ -67,7 +89,15 @@ describe("API key diagnosis -> treatment end-to-end flow", () => {
 
   describe("API key format error flow (CFG.1.1)", () => {
     it("diagnoses bad key format and walks through treatment to resolution", async () => {
-      // Diagnose: key with no recognized provider
+      mockAiDiagnose.mockResolvedValueOnce({
+        icd_ai_code: "CFG.1.1",
+        name: "API Key Format Error",
+        confidence: 0.8,
+        severity: "High",
+        reasoning: "The API key does not match any known provider format.",
+        differential: [],
+      });
+
       const { status, json: diagRes } = await post("/diagnose", {
         evidence: [{ type: "config", apiKey: { masked: "bad-key-..." } }],
       });
@@ -78,7 +108,6 @@ describe("API key diagnosis -> treatment end-to-end flow", () => {
 
       const sessionId = diagRes.sessionId;
 
-      // RX-CFG-001 has 3 steps: prompt_user, update_config, test_connection
       // Step 1: prompt user for corrected key
       const { json: treat1 } = await post("/treat", {
         sessionId,
@@ -112,7 +141,15 @@ describe("API key diagnosis -> treatment end-to-end flow", () => {
 
   describe("Auth failure flow (CFG.3.1)", () => {
     it("diagnoses auth failure and walks through 4 treatment steps to resolution", async () => {
-      // Diagnose: valid-looking key rejected by provider
+      mockAiDiagnose.mockResolvedValueOnce({
+        icd_ai_code: "CFG.3.1",
+        name: "Auth Failure",
+        confidence: 0.85,
+        severity: "High",
+        reasoning: "The API key is being rejected by the provider.",
+        differential: [],
+      });
+
       const { status, json: diagRes } = await post("/diagnose", {
         evidence: [
           {
@@ -129,7 +166,6 @@ describe("API key diagnosis -> treatment end-to-end flow", () => {
 
       const sessionId = diagRes.sessionId;
 
-      // RX-CFG-004 has 4 steps: validate_config, prompt_user, update_config, test_connection
       // Step 1: diagnose/inspect the rejection reason
       const { json: treat1 } = await post("/treat", {
         sessionId,
@@ -172,7 +208,15 @@ describe("API key diagnosis -> treatment end-to-end flow", () => {
 
   describe("Treatment failure mid-flow", () => {
     it("returns failed status when a treatment step fails", async () => {
-      // Diagnose with missing key
+      mockAiDiagnose.mockResolvedValueOnce({
+        icd_ai_code: "CFG.1.2",
+        name: "API Key Missing",
+        confidence: 0.95,
+        severity: "Critical",
+        reasoning: "No API key is configured.",
+        differential: [],
+      });
+
       const { json: diagRes } = await post("/diagnose", {
         evidence: [{ type: "config", apiKey: { masked: "(empty)" } }],
       });

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { app } from "../../server.js";
 
 // Mock the AI diagnostician module
@@ -24,9 +24,18 @@ describe("POST /diagnose", () => {
     mockAiDiagnose.mockResolvedValue(null); // default fallback
   });
 
-  // ─── Config/Connectivity fast-path (always runs, no AI needed) ──
+  // ─── All diagnosis goes through AI ────────────────────────────────
 
-  it("detects CFG.1.2 when API key is missing (empty)", async () => {
+  it("sends config evidence to AI for diagnosis", async () => {
+    mockAiDiagnose.mockResolvedValueOnce({
+      icd_ai_code: "CFG.1.2",
+      name: "API Key Missing",
+      confidence: 0.95,
+      severity: "Critical",
+      reasoning: "No API key is configured.",
+      differential: [],
+    });
+
     const { status, json } = await postDiagnose({
       evidence: [
         {
@@ -37,65 +46,47 @@ describe("POST /diagnose", () => {
     });
 
     expect(status).toBe(200);
-    expect(json.sessionId).toBeDefined();
-    expect(json.diagnosis).not.toBeNull();
     expect(json.diagnosis.icd_ai_code).toBe("CFG.1.2");
     expect(json.diagnosis.name).toBe("API Key Missing");
-    expect(json.diagnosis.confidence).toBeGreaterThanOrEqual(0.9);
-    // Config fast-path should NOT call AI
-    expect(mockAiDiagnose).not.toHaveBeenCalled();
+    expect(mockAiDiagnose).toHaveBeenCalledOnce();
   });
 
-  it("detects CFG.1.2 when API key masked field is absent", async () => {
-    const { status, json } = await postDiagnose({
-      evidence: [
-        {
-          type: "config",
-          apiKey: { masked: "" },
-        },
-      ],
+  it("sends connectivity evidence to AI for diagnosis", async () => {
+    mockAiDiagnose.mockResolvedValueOnce({
+      icd_ai_code: "CFG.3.1",
+      name: "Auth Failure",
+      confidence: 0.95,
+      severity: "Critical",
+      reasoning: "API key rejected by provider.",
+      differential: [],
     });
 
-    expect(status).toBe(200);
-    expect(json.diagnosis.icd_ai_code).toBe("CFG.1.2");
-    expect(mockAiDiagnose).not.toHaveBeenCalled();
-  });
-
-  it("detects CFG.1.1 when API key has unknown format (no provider)", async () => {
     const { status, json } = await postDiagnose({
       evidence: [
         {
-          type: "config",
-          apiKey: { masked: "abc***xyz" },
-        },
-      ],
-    });
-
-    expect(status).toBe(200);
-    expect(json.diagnosis.icd_ai_code).toBe("CFG.1.1");
-    expect(json.diagnosis.name).toBe("API Key Format Error");
-    expect(json.diagnosis.confidence).toBeGreaterThanOrEqual(0.7);
-    expect(mockAiDiagnose).not.toHaveBeenCalled();
-  });
-
-  it("detects CFG.3.1 with auth error logs and valid provider key", async () => {
-    const { status, json } = await postDiagnose({
-      evidence: [
-        {
-          type: "config",
-          apiKey: { masked: "sk-ant-***", provider: "anthropic" },
-          errorLogs: ["HTTP 401 Unauthorized: invalid x-api-key"],
+          type: "connectivity",
+          providers: [
+            { name: "anthropic", endpoint: "https://api.anthropic.com", reachable: true, authStatus: "failed", authError: "401 Unauthorized" },
+          ],
         },
       ],
     });
 
     expect(status).toBe(200);
     expect(json.diagnosis.icd_ai_code).toBe("CFG.3.1");
-    expect(json.diagnosis.name).toBe("Auth Failure");
-    expect(mockAiDiagnose).not.toHaveBeenCalled();
+    expect(mockAiDiagnose).toHaveBeenCalledOnce();
   });
 
-  it("detects CFG.2.1 with invalid endpoint URL", async () => {
+  it("sends endpoint misconfiguration to AI for diagnosis", async () => {
+    mockAiDiagnose.mockResolvedValueOnce({
+      icd_ai_code: "CFG.2.1",
+      name: "Endpoint Misconfiguration",
+      confidence: 0.9,
+      severity: "Moderate",
+      reasoning: "The configured endpoint URL is invalid.",
+      differential: [],
+    });
+
     const { status, json } = await postDiagnose({
       evidence: [
         {
@@ -107,28 +98,12 @@ describe("POST /diagnose", () => {
 
     expect(status).toBe(200);
     expect(json.diagnosis.icd_ai_code).toBe("CFG.2.1");
-    expect(json.diagnosis.name).toBe("Endpoint Misconfiguration");
-    expect(mockAiDiagnose).not.toHaveBeenCalled();
+    expect(mockAiDiagnose).toHaveBeenCalledOnce();
   });
 
-  it("detects CFG.2.1 when endpoint is unreachable", async () => {
-    const { status, json } = await postDiagnose({
-      evidence: [
-        {
-          type: "config",
-          endpoint: { url: "https://api.example.com", reachable: false },
-        },
-      ],
-    });
+  // ─── AI diagnosis with known vs novel codes ───────────────────────
 
-    expect(status).toBe(200);
-    expect(json.diagnosis.icd_ai_code).toBe("CFG.2.1");
-    expect(mockAiDiagnose).not.toHaveBeenCalled();
-  });
-
-  // ─── AI-first diagnosis flow ─────────────────────────────────────
-
-  it("uses AI diagnosis when available (known disease code)", async () => {
+  it("uses AI diagnosis with known disease code and standard prescriptions", async () => {
     mockAiDiagnose.mockResolvedValueOnce({
       icd_ai_code: "O.4.1",
       name: "Tool Permission Denial",
@@ -151,8 +126,8 @@ describe("POST /diagnose", () => {
     expect(json.diagnosis.severity).toBe("High");
     expect(json.differential).toHaveLength(1);
     expect(json.differential[0].icd_ai_code).toBe("O.1.1");
-    // Known disease code should get standard prescriptions
     expect(json.treatmentPlan).toBeDefined();
+    expect(json.isNovelCode).toBe(false);
     expect(mockAiDiagnose).toHaveBeenCalledOnce();
   });
 
@@ -177,11 +152,32 @@ describe("POST /diagnose", () => {
     expect(status).toBe(200);
     expect(json.diagnosis.icd_ai_code).toBe("NOVEL.1.1");
     expect(json.diagnosis.name).toBe("Context Window Overflow");
+    expect(json.isNovelCode).toBe(true);
     expect(json.treatmentPlan).toHaveLength(2);
     expect(json.treatmentPlan[0].description).toBe("Clear context and restart.");
     expect(json.treatmentPlan[0].requiresUserInput).toBe(false);
     expect(json.treatmentPlan[1].requiresUserInput).toBe(true);
     expect(json.treatmentPlan[1].inputPrompt).toBe("Reduce input size.");
+  });
+
+  it("returns empty treatment plan for novel diagnosis without AI steps", async () => {
+    mockAiDiagnose.mockResolvedValueOnce({
+      icd_ai_code: "NOVEL.2.1",
+      name: "Some Unknown Issue",
+      confidence: 0.6,
+      severity: "Low",
+      reasoning: "Unclear symptoms.",
+      differential: [],
+    });
+
+    const { status, json } = await postDiagnose({
+      symptoms: "something weird",
+    });
+
+    expect(status).toBe(200);
+    expect(json.diagnosis.icd_ai_code).toBe("NOVEL.2.1");
+    expect(json.isNovelCode).toBe(true);
+    expect(json.treatmentPlan).toEqual([]);
   });
 
   // ─── Rule-based fallback (AI returns null) ───────────────────────
@@ -226,6 +222,8 @@ describe("POST /diagnose", () => {
     expect(json.summary).toContain("No diagnosis");
   });
 
+  // ─── Edge cases ───────────────────────────────────────────────────
+
   it("returns 400 for invalid request body", async () => {
     const res = await app.request("/diagnose", {
       method: "POST",
@@ -236,7 +234,7 @@ describe("POST /diagnose", () => {
     expect(res.status).toBe(400);
   });
 
-  it("includes treatmentPlan in response", async () => {
+  it("includes treatmentPlan array in response", async () => {
     const { status, json } = await postDiagnose({
       evidence: [
         {
@@ -264,26 +262,5 @@ describe("POST /diagnose", () => {
 
     expect(status).toBe(200);
     expect(Array.isArray(json.differential)).toBe(true);
-  });
-
-  // ─── AI returns result but with empty treatment for novel code ───
-
-  it("returns empty treatment plan for novel diagnosis without AI steps", async () => {
-    mockAiDiagnose.mockResolvedValueOnce({
-      icd_ai_code: "NOVEL.2.1",
-      name: "Some Unknown Issue",
-      confidence: 0.6,
-      severity: "Low",
-      reasoning: "Unclear symptoms.",
-      differential: [],
-    });
-
-    const { status, json } = await postDiagnose({
-      symptoms: "something weird",
-    });
-
-    expect(status).toBe(200);
-    expect(json.diagnosis.icd_ai_code).toBe("NOVEL.2.1");
-    expect(json.treatmentPlan).toEqual([]);
   });
 });
