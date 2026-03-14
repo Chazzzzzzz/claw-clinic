@@ -12,7 +12,7 @@ export interface AIDiagnosisResult {
   severity: string;
   reasoning: string;
   differential: Array<{ icd_ai_code: string; name: string; confidence: number }>;
-  treatmentSteps?: Array<{ action: string; description: string }>;
+  treatmentSteps?: Array<{ action: string; description: string; requiresUserInput: boolean }>;
 }
 
 const SUBMIT_DIAGNOSIS_TOOL: Anthropic.Tool = {
@@ -65,11 +65,16 @@ const SUBMIT_DIAGNOSIS_TOOL: Anthropic.Tool = {
           properties: {
             action: { type: "string" },
             description: { type: "string" },
+            requires_user_input: {
+              type: "boolean",
+              description:
+                "True if this step requires human action (e.g., changing a setting, approving a change, providing information). False if it can be verified or executed automatically.",
+            },
           },
-          required: ["action", "description"],
+          required: ["action", "description", "requires_user_input"],
         },
         description:
-          "Treatment steps if the disease code is NOT in the known catalog. Omit if using a known disease code.",
+          "Treatment steps if the disease code is NOT in the known catalog. REQUIRED for novel codes — include actionable steps the user can follow to resolve the issue.",
       },
     },
     required: ["icd_ai_code", "name", "confidence", "severity", "reasoning", "differential"],
@@ -105,10 +110,15 @@ ${prescriptionSummary}
 ## Instructions
 1. Analyze the evidence and symptoms provided.
 2. Match against known diseases first. Use the exact ICD-AI code if a known disease matches.
-3. If no known disease matches well, you may create a novel diagnosis with a descriptive code.
+3. If no known disease matches well, create a novel diagnosis with a descriptive code following the ICD-AI convention (Department.Number.Variant).
 4. Always provide differential diagnoses — other conditions that could explain the symptoms.
-5. Only include treatment_steps if the diagnosis uses a code NOT in the known catalog above.
-6. Call the submit_diagnosis tool with your structured diagnosis. Do NOT respond with plain text.`;
+5. Only include treatment_steps if the diagnosis uses a code NOT in the known catalog above. For novel codes, treatment_steps are REQUIRED — include actionable steps with requires_user_input set correctly.
+6. Call the submit_diagnosis tool with your structured diagnosis. Do NOT respond with plain text.
+
+## Diagnostic Discriminators
+- **Loop vs Hang**: An infinite loop (E.1.1) shows repeated tool calls with identical arguments (toolCallCount high, loopDetected=true). A hang shows a single call that never returns (toolCallCount=0, high latency, 0 tokens produced). Do not confuse waiting-for-response with looping.
+- **Cost vs Latency**: Cost Explosion (C.1.1) is about monetary spend (high totalCostUsd, high totalTokens). Latency Arrhythmia (C.2.1) is about response time (high avgLatencyMs) regardless of cost.
+- **Config vs Platform**: Config issues (CFG.*) are in the agent's own config files. Platform integration issues are about external platform settings (Discord intents, Telegram permissions, Node.js version requirements).`;
 }
 
 function serializeEvidence(evidence: Evidence[], symptoms?: string): string {
@@ -193,7 +203,8 @@ export async function aiDiagnose(
       severity: input.severity as string,
       reasoning: input.reasoning as string,
       differential: (input.differential as Array<{ icd_ai_code: string; name: string; confidence: number }>) || [],
-      treatmentSteps: input.treatment_steps as Array<{ action: string; description: string }> | undefined,
+      treatmentSteps: (input.treatment_steps as Array<{ action: string; description: string; requires_user_input: boolean }> | undefined)
+        ?.map((s) => ({ action: s.action, description: s.description, requiresUserInput: s.requires_user_input ?? false })),
     };
   } catch {
     // AI unavailable — fall back to rule-based

@@ -101,8 +101,8 @@ describe("aiDiagnose", () => {
             reasoning: "Agent has consumed entire context window.",
             differential: [],
             treatment_steps: [
-              { action: "reset_context", description: "Clear the agent's context and restart." },
-              { action: "reduce_input", description: "Reduce input size for next run." },
+              { action: "reset_context", description: "Clear the agent's context and restart.", requires_user_input: false },
+              { action: "reduce_input", description: "Reduce input size for next run.", requires_user_input: true },
             ],
           },
         },
@@ -117,6 +117,8 @@ describe("aiDiagnose", () => {
     expect(result!.icd_ai_code).toBe("NOVEL.1.1");
     expect(result!.treatmentSteps).toHaveLength(2);
     expect(result!.treatmentSteps![0].action).toBe("reset_context");
+    expect(result!.treatmentSteps![0].requiresUserInput).toBe(false);
+    expect(result!.treatmentSteps![1].requiresUserInput).toBe(true);
   });
 
   it("returns null when API call throws", async () => {

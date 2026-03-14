@@ -99,6 +99,7 @@ export interface DiagnosisResponse {
     confidence: number;
   }>;
   treatmentPlan: TreatmentStep[];
+  isNovelCode?: boolean;
   summary: string;
 }
 

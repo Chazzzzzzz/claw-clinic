@@ -10,6 +10,7 @@ export interface StoredSession {
   diagnosisName: string;
   createdAt: string;
   detectedProvider?: string;
+  isNovelCode?: boolean;
 }
 
 const SESSION_DIR = join(homedir(), ".openclaw", "claw-clinic");

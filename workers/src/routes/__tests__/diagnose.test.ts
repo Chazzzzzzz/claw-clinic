@@ -165,8 +165,8 @@ describe("POST /diagnose", () => {
       reasoning: "Agent has consumed its entire context window.",
       differential: [],
       treatmentSteps: [
-        { action: "reset_context", description: "Clear context and restart." },
-        { action: "reduce_input", description: "Reduce input size." },
+        { action: "reset_context", description: "Clear context and restart.", requiresUserInput: false },
+        { action: "reduce_input", description: "Reduce input size.", requiresUserInput: true },
       ],
     });
 
@@ -179,6 +179,9 @@ describe("POST /diagnose", () => {
     expect(json.diagnosis.name).toBe("Context Window Overflow");
     expect(json.treatmentPlan).toHaveLength(2);
     expect(json.treatmentPlan[0].description).toBe("Clear context and restart.");
+    expect(json.treatmentPlan[0].requiresUserInput).toBe(false);
+    expect(json.treatmentPlan[1].requiresUserInput).toBe(true);
+    expect(json.treatmentPlan[1].inputPrompt).toBe("Reduce input size.");
   });
 
   // ─── Rule-based fallback (AI returns null) ───────────────────────

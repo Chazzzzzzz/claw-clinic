@@ -1781,4 +1781,233 @@ export const MVP_DISEASES: DiseaseRecord[] = [
     last_updated: "2026-03-14",
     case_count: 0,
   },
+
+  // ─── I.5.1 Authentication Bypass ──────────────────────────────────
+  {
+    icd_ai_code: "I.5.1",
+    name: "Authentication Bypass",
+    department: "Immunology",
+    description:
+      "Gateway or service accepts authentication tokens without proper validation. Unauthorized access is possible with arbitrary or malformed credentials. Common in WebSocket-based architectures where auth checks verify token presence but not content.",
+    diagnostic_criteria: {
+      vital_sign_thresholds: {
+        auth_bypass_count: { min: 1 },
+        unauthorized_access_count: { min: 1 },
+      },
+      base_weight: 1.0,
+      required_threshold_count: 1,
+      supporting_symptoms: [
+        "Auth token accepted without validation",
+        "Any arbitrary token value passes authentication",
+        "Device identity checks bypassed",
+        "WebSocket handshake skips token verification",
+      ],
+      exclusion_criteria: [
+        "Token is validated against a known secret or signing key",
+        "Authentication failure is logged and rejected",
+      ],
+    },
+    severity: "Critical",
+    prevalence: "Moderate",
+    etiology: [
+      "Token presence check without content validation",
+      "Missing signature verification on auth tokens",
+      "WebSocket upgrade bypassing HTTP auth middleware",
+      "Development auth stubs left in production",
+    ],
+    progression:
+      "Without remediation, any client can impersonate any identity. Attackers can escalate from read access to full control. Compromised tokens cannot be revoked if validation was never enforced.",
+    medical_analogy: {
+      human_disease: "Immune deficiency",
+      explanation:
+        "Like an immune system that detects pathogens but fails to mount a response, the gateway recognizes tokens but never validates them, allowing any foreign entity through unchallenged.",
+    },
+    prescriptions: ["RX-STD-034"],
+    first_documented: "2026-03-14",
+    last_updated: "2026-03-14",
+    case_count: 0,
+  },
+
+  // ─── O.5.1 Tool Call Format Corruption ────────────────────────────
+  {
+    icd_ai_code: "O.5.1",
+    name: "Tool Call Format Corruption",
+    department: "Orthopedics",
+    description:
+      "Model outputs tool/function calls as plain text or malformed JSON instead of using the structured tool_use protocol. The framework receives text that looks like tool calls but cannot parse or execute them. Common with models that don't natively support structured tool_use (e.g., some Gemini versions).",
+    diagnostic_criteria: {
+      vital_sign_thresholds: {
+        tool_call_count: { min: 0 },
+        text_tool_call_count: { min: 1 },
+      },
+      base_weight: 0.95,
+      required_threshold_count: 2,
+      supporting_symptoms: [
+        "Tool calls rendered as plain text JSON",
+        "Zero structured tool_use blocks despite model describing tool invocations",
+        "Model outputs function call syntax as text content",
+        "Framework reports 0 tool calls but model clearly intends to use tools",
+      ],
+      exclusion_criteria: [
+        "Tools are called via proper structured protocol",
+        "Model explicitly states it cannot use tools",
+      ],
+    },
+    severity: "High",
+    prevalence: "Common",
+    etiology: [
+      "Model lacks native structured tool_use support",
+      "Framework not configured for the model's tool calling format",
+      "API version mismatch between framework and model provider",
+      "Tool definitions not passed in model-compatible schema",
+    ],
+    progression:
+      "The agent appears to be working but no tools actually execute. Tasks that depend on tool results will fail silently or the agent will confabulate results. The user sees tool-call-like text but nothing happens.",
+    medical_analogy: {
+      human_disease: "Motor apraxia",
+      explanation:
+        "Like a patient who can describe how to perform an action but cannot execute the motor sequence, the model describes tool calls in text but cannot produce the structured format needed to actually invoke them.",
+    },
+    prescriptions: ["RX-STD-035"],
+    first_documented: "2026-03-14",
+    last_updated: "2026-03-14",
+    case_count: 0,
+  },
+
+  // ─── CFG.4.1 Platform Integration Misconfiguration ────────────────
+  {
+    icd_ai_code: "CFG.4.1",
+    name: "Platform Integration Misconfiguration",
+    department: "Configuration",
+    description:
+      "External platform integration (Discord, Telegram, Slack, etc.) is misconfigured at the platform level rather than in the agent's own config. Common examples include missing Discord privileged intents, incorrect Telegram bot permissions, wrong Node.js version for runtime requirements, or incompatible platform SDK versions.",
+    diagnostic_criteria: {
+      vital_sign_thresholds: {
+        platform_error_count: { min: 1 },
+      },
+      base_weight: 0.85,
+      required_threshold_count: 1,
+      supporting_symptoms: [
+        "Platform-specific privileged permissions not enabled",
+        "Required platform SDK features unavailable",
+        "Runtime version incompatible with framework requirements",
+        "Platform API returns permission or capability errors",
+      ],
+      exclusion_criteria: [
+        "Error is in agent's own configuration file",
+        "Issue is with API key or endpoint URL",
+      ],
+    },
+    severity: "High",
+    prevalence: "Common",
+    etiology: [
+      "Discord privileged intents not enabled in developer portal",
+      "Telegram bot missing required BotFather permissions",
+      "Node.js version below minimum required by framework",
+      "Platform SDK version incompatible with agent framework",
+    ],
+    progression:
+      "The agent cannot connect to or interact with the platform. Errors are often cryptic and point to the platform SDK rather than the root cause. Developers waste time debugging agent code when the fix is in the platform's developer console.",
+    medical_analogy: {
+      human_disease: "Environmental allergy",
+      explanation:
+        "Like an allergic reaction caused by external environmental factors rather than internal dysfunction, the agent is healthy but its environment (the platform) is not configured to support it.",
+    },
+    prescriptions: ["RX-STD-036"],
+    first_documented: "2026-03-14",
+    last_updated: "2026-03-14",
+    case_count: 0,
+  },
+
+  // ─── SYS.1.1 Persistence Store Corruption ─────────────────────────
+  {
+    icd_ai_code: "SYS.1.1",
+    name: "Persistence Store Corruption",
+    department: "Gastroenterology",
+    description:
+      "The agent's persistence layer (memory store, session store, state files) has become corrupted, typically after an unclean shutdown or crash. Data integrity checks fail, and the agent falls back to empty state, losing accumulated context and memories.",
+    diagnostic_criteria: {
+      vital_sign_thresholds: {
+        corruption_count: { min: 1 },
+        data_loss_indicator: { min: 1 },
+      },
+      base_weight: 0.9,
+      required_threshold_count: 2,
+      supporting_symptoms: [
+        "Checksum mismatch on persistence file",
+        "Integrity check failed on memory store",
+        "Fallback to empty store after corruption",
+        "Unclean shutdown corrupted state files",
+      ],
+      exclusion_criteria: [
+        "Store was intentionally cleared or reset",
+        "Data loss is from normal compaction or pruning",
+      ],
+    },
+    severity: "High",
+    prevalence: "Moderate",
+    etiology: [
+      "Unclean process shutdown during write operation",
+      "Disk full or I/O error during persistence flush",
+      "Concurrent write access without proper locking",
+      "Missing write-ahead log or journaling",
+    ],
+    progression:
+      "After corruption, the agent loses all accumulated memories and context. It starts fresh with no history, which may confuse users who expect continuity. Repeated corruption events indicate a systemic issue with the persistence layer.",
+    medical_analogy: {
+      human_disease: "Gastric ulcer",
+      explanation:
+        "Like a gastric ulcer that damages the stomach lining and impairs digestion, store corruption damages the persistence layer and impairs the agent's ability to retain and process accumulated knowledge.",
+    },
+    prescriptions: ["RX-STD-037"],
+    first_documented: "2026-03-14",
+    last_updated: "2026-03-14",
+    case_count: 0,
+  },
+
+  // ─── R.3.1 Memory Leak ────────────────────────────────────────────
+  {
+    icd_ai_code: "R.3.1",
+    name: "Memory Leak",
+    department: "Endocrinology",
+    description:
+      "Process memory usage grows steadily over time without bound, eventually leading to OOM kills or severe performance degradation. Common causes include unbounded caches, event listener accumulation, large object retention in closures, and missing cleanup in long-running sessions.",
+    diagnostic_criteria: {
+      vital_sign_thresholds: {
+        memory_growth_rate: { min: 0.1 },
+        memory_usage_mb: { min: 2000 },
+      },
+      base_weight: 0.9,
+      required_threshold_count: 2,
+      supporting_symptoms: [
+        "Process RSS grows steadily over hours/days",
+        "OOM killer terminates the process",
+        "Memory usage never decreases even during idle periods",
+        "Performance degrades proportionally with uptime",
+      ],
+      exclusion_criteria: [
+        "Memory usage is stable after initial warmup",
+        "High memory is from intentional caching with eviction",
+      ],
+    },
+    severity: "High",
+    prevalence: "Moderate",
+    etiology: [
+      "Unbounded in-memory caches without eviction policy",
+      "Event listeners added but never removed",
+      "Large objects retained in closures beyond their useful lifetime",
+      "Session data accumulated without cleanup for long-running processes",
+    ],
+    progression:
+      "Memory usage climbs linearly or exponentially with uptime. Performance degrades gradually as garbage collection pressure increases. Eventually the process is killed by the OOM killer or crashes, causing service disruption and potential data loss.",
+    medical_analogy: {
+      human_disease: "Edema (fluid retention)",
+      explanation:
+        "Like edema where the body retains fluid that should be expelled, the process retains memory allocations that should be freed, gradually swelling until function is impaired.",
+    },
+    prescriptions: ["RX-STD-038"],
+    first_documented: "2026-03-14",
+    last_updated: "2026-03-14",
+    case_count: 0,
+  },
 ];

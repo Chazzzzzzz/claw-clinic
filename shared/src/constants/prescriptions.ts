@@ -1823,4 +1823,315 @@ export const STANDARD_PRESCRIPTIONS: Prescription[] = [
     created_by: "system",
     created_at: "2026-03-14",
   },
+
+  // ─── RX-STD-034: Token Validation Protocol (I.5.1) ───────────────
+  {
+    id: "RX-STD-034",
+    name: "Token Validation Protocol",
+    version: "1.0.0",
+    target_disease: "I.5.1",
+    target_frameworks: ["all"],
+    type: "acute",
+    risk_level: "high",
+    auto_applicable: false,
+    steps: [
+      {
+        action: "config_suggestion",
+        target: "auth_configuration",
+        change:
+          "Enable cryptographic token validation on all authentication endpoints: (1) Configure the gateway to verify token signatures against a known secret or public key. (2) Reject tokens that fail signature verification with a 401 response. (3) For WebSocket connections, enforce token validation during the handshake phase before upgrading the connection.",
+        rationale:
+          "Token presence checks without content validation provide zero security. Cryptographic verification ensures only legitimately issued tokens are accepted.",
+        reversible: true,
+      },
+      {
+        action: "instruction",
+        target: "credential_rotation",
+        change:
+          "Rotate all existing tokens and secrets immediately: (1) Generate new signing keys for token creation. (2) Invalidate all previously issued tokens. (3) Notify connected clients that re-authentication is required. (4) Audit access logs for unauthorized access during the vulnerability window.",
+        rationale:
+          "Any tokens issued or used during the bypass window must be considered compromised. Rotation ensures attackers cannot continue using captured tokens.",
+        reversible: false,
+      },
+      {
+        action: "instruction",
+        target: "verification",
+        change:
+          "Verify the fix by attempting authentication with an invalid or arbitrary token. Confirm the request is rejected with an appropriate error.",
+        rationale:
+          "Negative testing confirms the validation is actually enforced and not just logging.",
+        reversible: true,
+      },
+    ],
+    dosage: {
+      parameters: { token_rotation_grace_period_minutes: 5 },
+      adjustments:
+        "In high-traffic systems, implement a grace period where both old and new signing keys are accepted to avoid disrupting active sessions during rotation.",
+    },
+    side_effects: [
+      "All active sessions will be terminated during token rotation",
+      "Clients must re-authenticate, causing brief service interruption",
+      "Audit log review may reveal scope of unauthorized access",
+    ],
+    contraindications: [
+      "Development environments where auth bypass is intentional for testing",
+    ],
+    efficacy: {
+      success_rate: 0.0,
+      sample_size: 0,
+      last_updated: "2026-03-14",
+      confidence_interval: "N/A",
+    },
+    created_by: "system",
+    created_at: "2026-03-14",
+  },
+
+  // ─── RX-STD-035: Tool Protocol Alignment (O.5.1) ─────────────────
+  {
+    id: "RX-STD-035",
+    name: "Tool Protocol Alignment",
+    version: "1.0.0",
+    target_disease: "O.5.1",
+    target_frameworks: ["all"],
+    type: "acute",
+    risk_level: "low",
+    auto_applicable: false,
+    steps: [
+      {
+        action: "config_suggestion",
+        target: "model_configuration",
+        change:
+          "Verify the model supports structured tool_use and switch if necessary: (1) Check the model's documentation for native tool/function calling support. (2) If the current model outputs tool calls as text, switch to a version that supports the structured tool_use protocol (e.g., Claude, GPT-4 with function calling, Gemini with function declarations). (3) Ensure the API request includes tool definitions in the format the model expects.",
+        rationale:
+          "The root cause is a model that does not support structured tool invocation. Switching to a compatible model is the most reliable fix.",
+        reversible: true,
+      },
+      {
+        action: "config_suggestion",
+        target: "framework_configuration",
+        change:
+          "Verify the framework's tool configuration matches the model's expected format: (1) Check that tool schemas are passed in the API request. (2) Ensure the framework is parsing the model's response for tool_use blocks, not just text. (3) If using a proxy or middleware, confirm it preserves tool_use blocks in the response.",
+        rationale:
+          "Even with a compatible model, misconfigured tool definitions or response parsing can cause the same symptoms.",
+        reversible: true,
+      },
+      {
+        action: "instruction",
+        target: "verification",
+        change:
+          "Test with a simple tool call to verify the fix. Confirm the framework receives a structured tool_use block and executes the tool successfully.",
+        rationale:
+          "A single successful structured tool call confirms the entire pipeline is working.",
+        reversible: true,
+      },
+    ],
+    dosage: {
+      parameters: {},
+      adjustments:
+        "If the model cannot be changed, consider a text-to-tool-call parsing layer that extracts tool invocations from the model's text output, though this is fragile.",
+    },
+    side_effects: [
+      "Switching models may change output quality or behavior",
+      "Different models may have different tool calling limits or formats",
+    ],
+    contraindications: [
+      "Systems locked to a specific model that cannot be changed",
+    ],
+    efficacy: {
+      success_rate: 0.0,
+      sample_size: 0,
+      last_updated: "2026-03-14",
+      confidence_interval: "N/A",
+    },
+    created_by: "system",
+    created_at: "2026-03-14",
+  },
+
+  // ─── RX-STD-036: Platform Configuration Correction (CFG.4.1) ─────
+  {
+    id: "RX-STD-036",
+    name: "Platform Configuration Correction",
+    version: "1.0.0",
+    target_disease: "CFG.4.1",
+    target_frameworks: ["all"],
+    type: "acute",
+    risk_level: "medium",
+    auto_applicable: false,
+    steps: [
+      {
+        action: "instruction",
+        target: "diagnosis",
+        change:
+          "Identify the specific platform requirement that is not met: (1) Parse the error message for platform-specific keywords (e.g., 'privileged intents', 'GUILD_MEMBERS', 'bot permissions'). (2) Cross-reference with the platform's developer documentation. (3) Determine whether the issue is a permission, a runtime version, or an SDK compatibility problem.",
+        rationale:
+          "Platform integration errors are often cryptic. Identifying the exact requirement is the critical first step.",
+        reversible: true,
+      },
+      {
+        action: "config_suggestion",
+        target: "platform_settings",
+        change:
+          "Guide the user to the platform's developer console to apply the fix: (1) For Discord: navigate to the Bot section in the Developer Portal and enable required privileged intents (Message Content, Server Members, Presence). (2) For Telegram: use BotFather to configure bot permissions. (3) For runtime issues: update Node.js or the platform SDK to the required version. (4) Restart the agent after applying platform-level changes.",
+        rationale:
+          "These fixes must be applied in the platform's own settings, not in the agent's configuration files.",
+        reversible: true,
+      },
+      {
+        action: "instruction",
+        target: "verification",
+        change:
+          "Restart the agent and verify the platform connection succeeds without the previous error. Confirm the agent can send and receive messages on the platform.",
+        rationale:
+          "Platform configuration changes typically require a restart to take effect.",
+        reversible: true,
+      },
+    ],
+    dosage: {
+      parameters: {},
+      adjustments:
+        "Some platform changes (e.g., Discord privileged intents for bots in 100+ servers) require approval from the platform and may take days.",
+    },
+    side_effects: [
+      "Enabling privileged intents grants the bot access to more user data",
+      "Updating runtime versions may break other dependencies",
+    ],
+    contraindications: [
+      "Bots in many servers where privileged intent approval is required",
+      "Production systems where runtime updates need staged rollout",
+    ],
+    efficacy: {
+      success_rate: 0.0,
+      sample_size: 0,
+      last_updated: "2026-03-14",
+      confidence_interval: "N/A",
+    },
+    created_by: "system",
+    created_at: "2026-03-14",
+  },
+
+  // ─── RX-STD-037: Persistence Repair Protocol (SYS.1.1) ───────────
+  {
+    id: "RX-STD-037",
+    name: "Persistence Repair Protocol",
+    version: "1.0.0",
+    target_disease: "SYS.1.1",
+    target_frameworks: ["all"],
+    type: "acute",
+    risk_level: "medium",
+    auto_applicable: false,
+    steps: [
+      {
+        action: "instruction",
+        target: "data_recovery",
+        change:
+          "Attempt to repair the corrupted persistence store: (1) Check if the framework provides a built-in repair or integrity-check command (e.g., `sqlite3 db.sqlite 'PRAGMA integrity_check'`). (2) If a write-ahead log (WAL) exists, attempt recovery from the journal. (3) If repair fails, restore from the most recent backup. (4) If no backup exists, acknowledge the data loss and start fresh.",
+        rationale:
+          "Repair is preferred over restore to minimize data loss. WAL recovery can often salvage data from the last good state.",
+        reversible: true,
+      },
+      {
+        action: "config_suggestion",
+        target: "system_configuration",
+        change:
+          "Enable protections against future corruption: (1) Enable WAL mode or journaling on the persistence store. (2) Configure automatic backups on a regular schedule. (3) Add graceful shutdown handlers that flush pending writes before exit. (4) Implement file locking to prevent concurrent write corruption.",
+        rationale:
+          "Prevention is more effective than repair. WAL and proper shutdown handling eliminate the most common corruption causes.",
+        reversible: true,
+      },
+      {
+        action: "instruction",
+        target: "verification",
+        change:
+          "Verify the store is functional by writing and reading back a test entry. Confirm the integrity check passes on the repaired or restored store.",
+        rationale:
+          "A write-read roundtrip confirms the store is operational and not silently dropping data.",
+        reversible: true,
+      },
+    ],
+    dosage: {
+      parameters: { backup_interval_hours: 24 },
+      adjustments:
+        "For high-value persistence stores, reduce backup interval to hourly. For stores with frequent writes, consider continuous replication.",
+    },
+    side_effects: [
+      "Repair may not recover all data -- some recent writes may be lost",
+      "Enabling WAL mode increases disk usage",
+      "Backup schedules increase storage costs",
+    ],
+    contraindications: [
+      "Stores where data loss is acceptable and fresh start is preferred",
+      "Ephemeral agents where persistence is not critical",
+    ],
+    efficacy: {
+      success_rate: 0.0,
+      sample_size: 0,
+      last_updated: "2026-03-14",
+      confidence_interval: "N/A",
+    },
+    created_by: "system",
+    created_at: "2026-03-14",
+  },
+
+  // ─── RX-STD-038: Memory Leak Mitigation Protocol (R.3.1) ─────────
+  {
+    id: "RX-STD-038",
+    name: "Memory Leak Mitigation Protocol",
+    version: "1.0.0",
+    target_disease: "R.3.1",
+    target_frameworks: ["all"],
+    type: "acute",
+    risk_level: "medium",
+    auto_applicable: false,
+    steps: [
+      {
+        action: "instruction",
+        target: "diagnosis",
+        change:
+          "Identify the leak source: (1) Take a heap snapshot of the running process and compare with a snapshot from startup. (2) Look for objects with unexpectedly high retained size or count. (3) Check for common leak patterns: unbounded Maps/Arrays used as caches, event listeners added in loops without removal, closures retaining large objects. (4) Review long-running session handlers for missing cleanup logic.",
+        rationale:
+          "Fixing a memory leak requires identifying the specific allocation that is not being freed. Heap snapshots make retained objects visible.",
+        reversible: true,
+      },
+      {
+        action: "config_suggestion",
+        target: "system_configuration",
+        change:
+          "Implement memory limits and automatic restart as immediate mitigation: (1) Set Node.js --max-old-space-size to cap heap usage. (2) Configure a process manager (pm2, systemd) to restart the process when memory exceeds a threshold. (3) Add memory usage monitoring and alerting. (4) For caches, add an eviction policy (LRU) with a maximum size.",
+        rationale:
+          "Automatic restart prevents OOM kills and keeps the service available while the root cause is investigated.",
+        reversible: true,
+      },
+      {
+        action: "config_suggestion",
+        target: "application_code",
+        change:
+          "Apply targeted fixes for common leak patterns: (1) Add removeEventListener or off() calls matching every addEventListener or on() call. (2) Replace unbounded caches with LRU caches that have a max entry count. (3) Use WeakRef or WeakMap for object references that should not prevent garbage collection. (4) Implement session cleanup that runs on disconnect or timeout.",
+        rationale:
+          "These are the most common leak sources in Node.js agent frameworks. Fixing them directly addresses the root cause.",
+        reversible: true,
+      },
+    ],
+    dosage: {
+      parameters: { memory_limit_mb: 4096, restart_threshold_mb: 3500 },
+      adjustments:
+        "Adjust memory limit based on the host's available RAM. The restart threshold should be set below the limit to allow graceful shutdown.",
+    },
+    side_effects: [
+      "Automatic restart causes brief service interruption",
+      "Heap snapshots temporarily increase memory usage and pause the process",
+      "LRU eviction may cause cache misses for recently accessed items",
+    ],
+    contraindications: [
+      "Stateful processes where restart causes data loss (fix persistence first)",
+      "Systems where heap snapshots are too expensive to take in production",
+    ],
+    efficacy: {
+      success_rate: 0.0,
+      sample_size: 0,
+      last_updated: "2026-03-14",
+      confidence_interval: "N/A",
+    },
+    created_by: "system",
+    created_at: "2026-03-14",
+  },
 ];

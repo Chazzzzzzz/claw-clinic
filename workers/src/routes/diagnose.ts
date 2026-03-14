@@ -101,8 +101,13 @@ function analyzeConfigEvidence(evidence: ConfigEvidence[]): {
     }
   }
 
-  // If no config evidence contained an API key at all
-  if (!hasAnyApiKey && evidence.length > 0) {
+  // Only diagnose "API Key Missing" if the config evidence is actually about
+  // API key / endpoint / auth — not when config evidence was sent for unrelated
+  // purposes (e.g., rawConfig with exec permissions, cron settings, etc.)
+  const isAboutKeyOrEndpoint = evidence.some(
+    (ev) => ev.apiKey !== undefined || ev.endpoint !== undefined || ev.errorLogs?.length,
+  );
+  if (!hasAnyApiKey && isAboutKeyOrEndpoint) {
     return {
       icd_ai_code: "CFG.1.2",
       name: "API Key Missing",
@@ -313,7 +318,8 @@ diagnoseRouter.post("/diagnose", async (c) => {
           id: `step_${i + 1}`,
           action: step.action,
           description: step.description,
-          requiresUserInput: false,
+          requiresUserInput: step.requiresUserInput ?? false,
+          inputPrompt: step.requiresUserInput ? step.description : undefined,
         }));
       } else {
         treatmentPlan = [];
@@ -334,6 +340,7 @@ diagnoseRouter.post("/diagnose", async (c) => {
         },
         differential: aiResult.differential,
         treatmentPlan,
+        isNovelCode: !knownDisease,
         summary: `Diagnosed ${aiResult.name} (${aiResult.icd_ai_code}) with ${Math.round(aiResult.confidence * 100)}% confidence. ${aiResult.reasoning}`,
       });
     }

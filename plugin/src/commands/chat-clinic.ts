@@ -300,6 +300,7 @@ async function runDiagnosis(
     // Step 4: Auto-execute treatment
     if (diagnosis.treatmentPlan.length > 0) {
       const notifier = new ClinicNotifier(api, { mode: "tool" });
+      const isNovelCode = !!diagnosis.isNovelCode;
 
       const loopResult = await runTreatmentLoop({
         client,
@@ -321,7 +322,15 @@ async function runDiagnosis(
           diagnosisName: diagnosis.diagnosis.name,
           createdAt: new Date().toISOString(),
           detectedProvider,
+          isNovelCode,
         });
+      }
+
+      // For novel (non-local-fast-path) codes that completed treatment,
+      // re-diagnose to verify the fix worked. Loop until resolved or max attempts.
+      if (isNovelCode && loopResult.status === "resolved") {
+        const recheck = await reDiagnoseAfterTreatment(api, client, diagnosis.diagnosis, symptoms);
+        if (recheck) return { text: recheck };
       }
 
       return { text: formatResult(diagnosis.diagnosis, loopResult, detectedProvider) + unverifiedNote };
@@ -444,6 +453,15 @@ async function handleFollowUp(
 
     if (response.status === "resolved") {
       await clearSession();
+      // For novel codes, re-diagnose to verify the fix actually worked
+      if (session.isNovelCode) {
+        const recheck = await reDiagnoseAfterTreatment(
+          api, client,
+          { icd_ai_code: session.diagnosisCode, name: session.diagnosisName },
+          undefined,
+        );
+        if (recheck) return { text: recheck };
+      }
       return { text: `**${session.diagnosisName}** — Fixed — verified that ${verification.checkDescription} is now passing.` };
     }
 
@@ -493,6 +511,98 @@ async function handleFollowUp(
     const msg = err instanceof Error ? err.message : String(err);
     return { text: `Error resuming treatment: ${msg}` };
   }
+}
+
+// ─── Novel code re-diagnosis loop ────────────────────────────────
+
+const MAX_REDIAGNOSE_ROUNDS = 3;
+
+interface DiagnosisInfo {
+  icd_ai_code: string;
+  name: string;
+}
+
+/**
+ * After treating a novel (non-fast-path) diagnosis, re-collect evidence and
+ * re-diagnose to check if the issue is resolved. If the same issue persists,
+ * the AI generates a new treatment round. Loops up to MAX_REDIAGNOSE_ROUNDS.
+ *
+ * Returns a status message, or null if the issue is resolved on first check.
+ */
+async function reDiagnoseAfterTreatment(
+  api: PluginApi,
+  client: ClawClinicClient,
+  originalDiag: DiagnosisInfo,
+  originalSymptoms: string | undefined,
+): Promise<string | null> {
+  const lines: string[] = [];
+
+  for (let round = 1; round <= MAX_REDIAGNOSE_ROUNDS; round++) {
+    lines.push(`\n**Re-checking** (round ${round}/${MAX_REDIAGNOSE_ROUNDS})...`);
+
+    // Collect fresh evidence
+    const freshEvidence = await collectAllEvidence(api.config);
+    if (originalSymptoms) {
+      freshEvidence.push({ type: "behavior", description: originalSymptoms });
+    }
+
+    let reDiagnosis;
+    try {
+      reDiagnosis = await client.diagnose(freshEvidence, originalSymptoms);
+    } catch {
+      lines.push("Could not reach backend for re-diagnosis.");
+      break;
+    }
+
+    // If no diagnosis or different issue → original is resolved
+    if (!reDiagnosis.diagnosis || reDiagnosis.diagnosis.icd_ai_code !== originalDiag.icd_ai_code) {
+      lines.push(`**${originalDiag.name}** appears resolved after treatment.`);
+      return lines.join("\n");
+    }
+
+    // Same issue persists — run the new treatment plan if available
+    if (reDiagnosis.treatmentPlan.length === 0) {
+      lines.push(`**${originalDiag.name}** persists but no further treatment steps available. Manual intervention may be needed.`);
+      return lines.join("\n");
+    }
+
+    lines.push(`**${originalDiag.name}** still detected. Applying next round of treatment...`);
+
+    const notifier = new ClinicNotifier(api, { mode: "tool" });
+    const loopResult = await runTreatmentLoop({
+      client,
+      sessionId: reDiagnosis.sessionId,
+      treatmentPlan: reDiagnosis.treatmentPlan,
+      notifier,
+      config: api.config,
+    });
+
+    // If treatment pauses for user input, save session and return
+    if (loopResult.status === "paused_for_input" && loopResult.pendingStep) {
+      await saveSession({
+        sessionId: reDiagnosis.sessionId,
+        pendingStepId: loopResult.pendingStep.id,
+        pendingPrompt: loopResult.pendingStep.inputPrompt || loopResult.pendingStep.description,
+        diagnosisCode: reDiagnosis.diagnosis.icd_ai_code,
+        diagnosisName: reDiagnosis.diagnosis.name,
+        createdAt: new Date().toISOString(),
+        isNovelCode: true,
+      });
+      lines.push(`\nTreatment paused — awaiting your input:\n${loopResult.pendingStep.inputPrompt || loopResult.pendingStep.description}`);
+      lines.push("\nReply with `/clinic done` when complete, or `/clinic help` for instructions.");
+      return lines.join("\n");
+    }
+
+    if (loopResult.status === "failed") {
+      lines.push(`Treatment failed: ${loopResult.message}`);
+      return lines.join("\n");
+    }
+
+    // Treatment completed — loop will re-check
+  }
+
+  lines.push(`\nReached max re-diagnosis rounds (${MAX_REDIAGNOSE_ROUNDS}). Run \`/clinic\` again to continue.`);
+  return lines.join("\n");
 }
 
 // ─── Helpers ────────────────────────────────────────────────────
