@@ -19,6 +19,22 @@ import { getUserGuide, getKeyLengthGuide } from "../user-guides.js";
 import { executeVerificationPlan } from "../verification-executor.js";
 
 /**
+ * Disease codes that have local fast-path UX in the plugin (reVerify, getUserGuide).
+ * Backend AI handles all diagnosis — these codes just tell the plugin which
+ * diseases have specialized local treatment flows.
+ */
+const LOCAL_FAST_PATH_CODES = [
+  "CFG.1.1", // API Key Format Error — local key format validation + guide
+  "CFG.1.2", // API Key Missing — local key presence check + guide
+  "CFG.2.1", // Endpoint Misconfiguration — local connectivity reVerify
+  "CFG.3.1", // Auth Failure — local auth re-test via connectivity
+  "O.4.1",   // Tool Permission Denial — local permission re-check
+] as const;
+
+// Exported for testing only
+export { LOCAL_FAST_PATH_CODES };
+
+/**
  * Register /clinic as a chat command via registerCommand.
  * This bypasses the LLM entirely — works even when AI model is down.
  *
