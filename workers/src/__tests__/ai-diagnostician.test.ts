@@ -11,7 +11,7 @@ vi.mock("@anthropic-ai/sdk", () => {
   };
 });
 
-import { aiDiagnose, _buildSystemPrompt, _serializeEvidence } from "../ai-diagnostician.js";
+import { aiDiagnose, _systemPrompt, _serializeEvidence } from "../ai-diagnostician.js";
 import type { Evidence } from "@claw-clinic/shared";
 
 describe("aiDiagnose", () => {
@@ -52,13 +52,16 @@ describe("aiDiagnose", () => {
           id: "toolu_123",
           name: "submit_diagnosis",
           input: {
-            icd_ai_code: "O.4.1",
+            icd_ai_code: "PERM.1.1",
             name: "Tool Permission Denial",
             confidence: 0.9,
             severity: "High",
             reasoning: "The user reports inability to write files, indicating permission denial.",
             differential: [
-              { icd_ai_code: "O.1.1", name: "Tool Calling Fracture", confidence: 0.3 },
+              { icd_ai_code: "TOOL.1.1", name: "Tool Calling Fracture", confidence: 0.3 },
+            ],
+            treatment_steps: [
+              { action: "Allow exec tools", command: "openclaw config set tools.exec.restricted false", expected_output: "ok", next: "verify_fix" },
             ],
             checks: [
               { type: "check_config", target: "tools.exec.restricted", expect: "false", label: "Tool execution unrestricted" },
@@ -74,14 +77,15 @@ describe("aiDiagnose", () => {
     const result = await aiDiagnose([], "I can't write files now");
 
     expect(result).not.toBeNull();
-    expect(result!.icd_ai_code).toBe("O.4.1");
+    expect(result!.icd_ai_code).toBe("PERM.1.1");
     expect(result!.name).toBe("Tool Permission Denial");
     expect(result!.confidence).toBe(0.9);
     expect(result!.severity).toBe("High");
     expect(result!.differential).toHaveLength(1);
-    expect(result!.differential[0].icd_ai_code).toBe("O.1.1");
     expect(result!.checks).toHaveLength(1);
     expect(result!.fixes).toHaveLength(1);
+    expect(result!.treatmentSteps).toHaveLength(1);
+    expect(result!.treatmentSteps[0].command).toBe("openclaw config set tools.exec.restricted false");
 
     // Verify the API was called with correct params
     expect(mockCreate).toHaveBeenCalledOnce();
@@ -92,7 +96,7 @@ describe("aiDiagnose", () => {
     expect(callArgs.tool_choice).toEqual({ type: "tool", name: "submit_diagnosis" });
   });
 
-  it("returns novel diagnosis with treatment steps", async () => {
+  it("returns diagnosis with executable treatment steps", async () => {
     process.env.ANTHROPIC_API_KEY = "sk-ant-test-key";
 
     mockCreate.mockResolvedValueOnce({
@@ -102,23 +106,21 @@ describe("aiDiagnose", () => {
           id: "toolu_456",
           name: "submit_diagnosis",
           input: {
-            icd_ai_code: "NOVEL.1.1",
+            icd_ai_code: "CTX.1.1",
             name: "Context Window Overflow",
             confidence: 0.85,
             severity: "Moderate",
             reasoning: "Agent has consumed entire context window.",
             differential: [],
             treatment_steps: [
-              { action: "reset_context", description: "Clear the agent's context and restart.", requires_user_input: false },
-              { action: "reduce_input", description: "Reduce input size for next run.", requires_user_input: true },
+              { action: "Reset context", command: "openclaw session reset", expected_output: "Session reset", next: "run_next_step" },
+              { action: "Clear cache", command: "openclaw cache clear", expected_output: "Cache cleared", next: "done" },
             ],
             checks: [
               { type: "check_process", target: "openclaw", expect: "running", label: "OpenClaw process running" },
-              { type: "check_config", target: "context.maxTokens", expect: "100000", label: "Context limit configured" },
             ],
             fixes: [
-              { label: "Reset context window", command: "openclaw context reset", description: "Clear the current context window" },
-              { label: "Set context limit", command: "openclaw config set context.maxTokens 100000", description: "Set a reasonable context token limit" },
+              { label: "Reset context window", command: "openclaw session reset", description: "Clears the current session context" },
             ],
           },
         },
@@ -130,11 +132,11 @@ describe("aiDiagnose", () => {
     );
 
     expect(result).not.toBeNull();
-    expect(result!.icd_ai_code).toBe("NOVEL.1.1");
+    expect(result!.icd_ai_code).toBe("CTX.1.1");
     expect(result!.treatmentSteps).toHaveLength(2);
-    expect(result!.treatmentSteps![0].action).toBe("reset_context");
-    expect(result!.treatmentSteps![0].requiresUserInput).toBe(false);
-    expect(result!.treatmentSteps![1].requiresUserInput).toBe(true);
+    expect(result!.treatmentSteps[0].command).toBe("openclaw session reset");
+    expect(result!.treatmentSteps[0].expected_output).toBe("Session reset");
+    expect(result!.treatmentSteps[1].next).toBe("done");
   });
 
   it("returns null when API call throws", async () => {
@@ -158,13 +160,14 @@ describe("aiDiagnose", () => {
   });
 });
 
-describe("_buildSystemPrompt", () => {
-  it("includes disease catalog and prescriptions", () => {
-    const prompt = _buildSystemPrompt();
-    expect(prompt).toContain("E.1.1");
-    expect(prompt).toContain("Disease Catalog");
-    expect(prompt).toContain("standard prescriptions");
-    expect(prompt).toContain("diagnose");
+describe("_systemPrompt", () => {
+  it("contains diagnostic instructions without hardcoded disease catalog", () => {
+    expect(_systemPrompt).toContain("diagnostic engine");
+    expect(_systemPrompt).toContain("EXECUTABLE COMMANDS ONLY");
+    expect(_systemPrompt).toContain("Department.Number.Variant");
+    // Should NOT contain hardcoded disease entries
+    expect(_systemPrompt).not.toContain("Disease Catalog");
+    expect(_systemPrompt).not.toContain("standard prescriptions");
   });
 });
 
