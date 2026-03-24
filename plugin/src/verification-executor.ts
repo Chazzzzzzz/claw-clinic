@@ -1,6 +1,17 @@
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
+import { exec } from "node:child_process";
+import { promisify } from "node:util";
+import { homedir } from "node:os";
 import { collectConnectivityEvidence } from "./evidence.js";
 import type { VerificationConfidence } from "@claw-clinic/shared";
+
+const execAsync = promisify(exec);
+
+/** Expand ~ to the user's home directory */
+function expandHome(filepath: string): string {
+  if (filepath.startsWith("~/")) return filepath.replace("~", homedir());
+  return filepath;
+}
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -32,8 +43,9 @@ async function checkFile(step: VerificationStep): Promise<VerificationStepResult
   if (!step.target) {
     return { step, passed: false, confidence: step.confidence, error: "No target file path specified" };
   }
+  const resolved = expandHome(step.target);
   try {
-    await access(step.target);
+    await access(resolved);
     return { step, passed: true, confidence: step.confidence, detail: `File exists: ${step.target}` };
   } catch {
     return { step, passed: false, confidence: step.confidence, error: `File not found: ${step.target}` };
@@ -77,13 +89,25 @@ function resolveDotPath(obj: Record<string, unknown>, path: string): unknown {
   return current;
 }
 
-function checkConfig(step: VerificationStep, config: Record<string, unknown>): VerificationStepResult {
+async function checkConfig(step: VerificationStep, config: Record<string, unknown>): Promise<VerificationStepResult> {
   if (!step.target) {
     return { step, passed: false, confidence: step.confidence, error: "No target config key specified" };
   }
 
-  // Try flat key first, then dot-path resolution
-  const value = config[step.target] ?? (step.target.includes(".") ? resolveDotPath(config, step.target) : undefined);
+  // Try in-memory config first, then read the actual config file
+  let value = config[step.target] ?? (step.target.includes(".") ? resolveDotPath(config, step.target) : undefined);
+
+  // If not found in runtime config, try reading ~/.openclaw/openclaw.json
+  if (value === undefined || value === null) {
+    try {
+      const configPath = expandHome("~/.openclaw/openclaw.json");
+      const raw = await readFile(configPath, "utf-8");
+      const fileConfig = JSON.parse(raw) as Record<string, unknown>;
+      value = fileConfig[step.target] ?? (step.target.includes(".") ? resolveDotPath(fileConfig, step.target) : undefined);
+    } catch {
+      // Config file not readable — value stays undefined
+    }
+  }
 
   if (step.expect === "present") {
     if (value !== undefined && value !== null && value !== "") {
@@ -106,13 +130,22 @@ function checkConfig(step: VerificationStep, config: Record<string, unknown>): V
   return { step, passed: false, confidence: step.confidence, error: `Config key "${step.target}" not found` };
 }
 
-function checkProcess(step: VerificationStep): VerificationStepResult {
-  // Basic process check — verify current process is running (node)
-  if (step.target === "node" || !step.target) {
+async function checkProcess(step: VerificationStep): Promise<VerificationStepResult> {
+  if (!step.target) {
+    return { step, passed: true, confidence: step.confidence, detail: "No target process specified" };
+  }
+  if (step.target === "node") {
     return { step, passed: true, confidence: step.confidence, detail: "Node process is running" };
   }
-  // For other processes, we'd need platform-specific checks
-  return { step, passed: true, confidence: step.confidence, detail: `Process check for "${step.target}" — assumed running` };
+  try {
+    const { stdout } = await execAsync(`pgrep -f "${step.target}" 2>/dev/null || pidof "${step.target}" 2>/dev/null`, { timeout: 5_000 });
+    if (stdout.trim()) {
+      return { step, passed: true, confidence: step.confidence, detail: `Process "${step.target}" is running (pid ${stdout.trim().split("\n")[0]})` };
+    }
+    return { step, passed: false, confidence: step.confidence, error: `Process "${step.target}" is not running` };
+  } catch {
+    return { step, passed: false, confidence: step.confidence, error: `Process "${step.target}" is not running` };
+  }
 }
 
 function checkLogs(step: VerificationStep): VerificationStepResult {
@@ -143,9 +176,9 @@ export async function executeVerificationStep(
     case "check_connectivity":
       return checkConnectivity(step, config);
     case "check_config":
-      return checkConfig(step, config);
+      return await checkConfig(step, config);
     case "check_process":
-      return checkProcess(step);
+      return await checkProcess(step);
     case "check_logs":
       return checkLogs(step);
     case "custom":
