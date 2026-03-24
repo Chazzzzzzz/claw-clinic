@@ -26,7 +26,7 @@ describe("API key diagnosis -> treatment end-to-end flow", () => {
   });
 
   describe("Missing API key flow (CFG.1.2)", () => {
-    it("diagnoses, walks through 3 treatment steps, and resolves", async () => {
+    it("diagnoses and walks through AI-generated treatment steps to resolution", async () => {
       mockAiDiagnose.mockResolvedValueOnce({
         icd_ai_code: "CFG.1.2",
         name: "API Key Missing",
@@ -34,8 +34,15 @@ describe("API key diagnosis -> treatment end-to-end flow", () => {
         severity: "Critical",
         reasoning: "No API key is configured.",
         differential: [],
+        treatmentSteps: [
+          { action: "Check current config", command: "openclaw config get apiKey", expected_output: "apiKey", next: "run_next_step" },
+          { action: "Set API key", command: "openclaw config set apiKey sk-ant-...", expected_output: "ok", next: "run_next_step" },
+          { action: "Verify connection", command: "openclaw health", expected_output: "healthy", next: "done" },
+        ],
         checks: [],
-        fixes: [],
+        fixes: [
+          { label: "Set API key", command: "openclaw config set apiKey sk-ant-...", description: "Sets the API key" },
+        ],
       });
 
       // Step 1: Diagnose
@@ -55,7 +62,7 @@ describe("API key diagnosis -> treatment end-to-end flow", () => {
       expect(steps[1].id).toBe("step_2");
       expect(steps[2].id).toBe("step_3");
 
-      // Step 2: Execute step_1 (prompt user) -> expect "next" with step_2
+      // Step 2: Execute step_1 -> expect "next" with step_2
       const { json: treat1 } = await post("/treat", {
         sessionId,
         stepId: "step_1",
@@ -65,20 +72,17 @@ describe("API key diagnosis -> treatment end-to-end flow", () => {
       expect(treat1.status).toBe("next");
       expect(treat1.nextStep.id).toBe("step_2");
 
-      // Step 3: Execute step_2 (update config with user-provided key) -> expect "next" with step_3
+      // Step 3: Execute step_2 -> expect "next" with step_3
       const { json: treat2 } = await post("/treat", {
         sessionId,
         stepId: "step_2",
-        stepResult: {
-          success: true,
-          data: { userInput: "sk-ant-api03-newkey123" },
-        },
+        stepResult: { success: true },
       });
 
       expect(treat2.status).toBe("next");
       expect(treat2.nextStep.id).toBe("step_3");
 
-      // Step 4: Execute step_3 (verify connection) -> expect "resolved"
+      // Step 4: Execute step_3 -> expect "resolved"
       const { json: treat3 } = await post("/treat", {
         sessionId,
         stepId: "step_3",
@@ -98,6 +102,11 @@ describe("API key diagnosis -> treatment end-to-end flow", () => {
         severity: "High",
         reasoning: "The API key does not match any known provider format.",
         differential: [],
+        treatmentSteps: [
+          { action: "Show current key", command: "openclaw config get apiKey", expected_output: "apiKey", next: "run_next_step" },
+          { action: "Set correct key", command: "openclaw config set apiKey sk-ant-corrected", expected_output: "ok", next: "run_next_step" },
+          { action: "Test auth", command: "openclaw health", expected_output: "healthy", next: "done" },
+        ],
         checks: [],
         fixes: [],
       });
@@ -112,7 +121,7 @@ describe("API key diagnosis -> treatment end-to-end flow", () => {
 
       const sessionId = diagRes.sessionId;
 
-      // Step 1: prompt user for corrected key
+      // Step 1
       const { json: treat1 } = await post("/treat", {
         sessionId,
         stepId: "step_1",
@@ -121,19 +130,16 @@ describe("API key diagnosis -> treatment end-to-end flow", () => {
       expect(treat1.status).toBe("next");
       expect(treat1.nextStep.id).toBe("step_2");
 
-      // Step 2: update config with corrected key
+      // Step 2
       const { json: treat2 } = await post("/treat", {
         sessionId,
         stepId: "step_2",
-        stepResult: {
-          success: true,
-          data: { userInput: "sk-ant-api03-corrected" },
-        },
+        stepResult: { success: true },
       });
       expect(treat2.status).toBe("next");
       expect(treat2.nextStep.id).toBe("step_3");
 
-      // Step 3: verify connection
+      // Step 3
       const { json: treat3 } = await post("/treat", {
         sessionId,
         stepId: "step_3",
@@ -143,15 +149,21 @@ describe("API key diagnosis -> treatment end-to-end flow", () => {
     });
   });
 
-  describe("Auth failure flow (CFG.3.1)", () => {
-    it("diagnoses auth failure and walks through 4 treatment steps to resolution", async () => {
+  describe("Auth failure flow (AUTH.1.1)", () => {
+    it("diagnoses auth failure and walks through treatment to resolution", async () => {
       mockAiDiagnose.mockResolvedValueOnce({
-        icd_ai_code: "CFG.3.1",
+        icd_ai_code: "AUTH.1.1",
         name: "Auth Failure",
         confidence: 0.85,
         severity: "High",
         reasoning: "The API key is being rejected by the provider.",
         differential: [],
+        treatmentSteps: [
+          { action: "Check auth status", command: "openclaw health", expected_output: "auth", next: "run_next_step" },
+          { action: "View current key", command: "cat ~/.config/openclaw/auth-profiles.json", expected_output: "apiKey", next: "run_next_step" },
+          { action: "Set new key", command: "openclaw config set apiKey sk-ant-api03-freshkey", expected_output: "ok", next: "run_next_step" },
+          { action: "Verify connection", command: "openclaw health", expected_output: "healthy", next: "done" },
+        ],
         checks: [],
         fixes: [],
       });
@@ -167,12 +179,12 @@ describe("API key diagnosis -> treatment end-to-end flow", () => {
       });
 
       expect(status).toBe(200);
-      expect(diagRes.diagnosis.icd_ai_code).toBe("CFG.3.1");
+      expect(diagRes.diagnosis.icd_ai_code).toBe("AUTH.1.1");
       expect(diagRes.treatmentPlan).toHaveLength(4);
 
       const sessionId = diagRes.sessionId;
 
-      // Step 1: diagnose/inspect the rejection reason
+      // Walk through all 4 steps
       const { json: treat1 } = await post("/treat", {
         sessionId,
         stepId: "step_1",
@@ -181,7 +193,6 @@ describe("API key diagnosis -> treatment end-to-end flow", () => {
       expect(treat1.status).toBe("next");
       expect(treat1.nextStep.id).toBe("step_2");
 
-      // Step 2: ask user to verify key in provider console
       const { json: treat2 } = await post("/treat", {
         sessionId,
         stepId: "step_2",
@@ -190,19 +201,14 @@ describe("API key diagnosis -> treatment end-to-end flow", () => {
       expect(treat2.status).toBe("next");
       expect(treat2.nextStep.id).toBe("step_3");
 
-      // Step 3: update config with new key
       const { json: treat3 } = await post("/treat", {
         sessionId,
         stepId: "step_3",
-        stepResult: {
-          success: true,
-          data: { userInput: "sk-ant-api03-freshkey" },
-        },
+        stepResult: { success: true },
       });
       expect(treat3.status).toBe("next");
       expect(treat3.nextStep.id).toBe("step_4");
 
-      // Step 4: verify connection with new key
       const { json: treat4 } = await post("/treat", {
         sessionId,
         stepId: "step_4",
@@ -221,6 +227,9 @@ describe("API key diagnosis -> treatment end-to-end flow", () => {
         severity: "Critical",
         reasoning: "No API key is configured.",
         differential: [],
+        treatmentSteps: [
+          { action: "Set API key", command: "openclaw config set apiKey sk-ant-...", expected_output: "ok", next: "done" },
+        ],
         checks: [],
         fixes: [],
       });
