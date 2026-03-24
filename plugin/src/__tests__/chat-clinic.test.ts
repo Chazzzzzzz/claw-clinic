@@ -151,7 +151,8 @@ describe("/clinic fresh diagnosis with checks and fixes", () => {
     expect(result.text).toContain("To fix");
     expect(result.text).toContain("1. Paste new key");
     expect(result.text).toContain("2. Run config command");
-    expect(result.text).toContain("Reply 1-2 to apply");
+    expect(result.text).toContain("/clinic 1");
+    expect(result.text).toContain("to apply");
 
     diagnoseMock.mockRestore();
   });
@@ -285,11 +286,13 @@ describe("/clinic follow-up with numeric fix selection", () => {
     const result = await handler({ args: "2" });
 
     expect(result.text).toContain("openclaw config set anthropic.apiKey KEY");
+    expect(result.text).toContain("/clinic run");
     expect(result.text).toContain("/clinic done");
 
     expect(saveSession).toHaveBeenCalledWith(
       expect.objectContaining({
-        pendingStepId: "awaiting_fix",
+        pendingStepId: "awaiting_run_confirmation",
+        pendingCommand: "openclaw config set anthropic.apiKey KEY",
       }),
     );
   });
@@ -372,7 +375,8 @@ describe("/clinic follow-up with numeric fix selection", () => {
 
     const result = await handler({ args: "what do I do" });
 
-    expect(result.text).toContain("Reply 1-2 to pick a fix");
+    expect(result.text).toContain("/clinic 1");
+    expect(result.text).toContain("to pick a fix");
     expect(result.text).toContain("/clinic done");
   });
 });

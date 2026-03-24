@@ -1,8 +1,4 @@
 import Anthropic from "@anthropic-ai/sdk";
-import {
-  MVP_DISEASES,
-  STANDARD_PRESCRIPTIONS,
-} from "@claw-clinic/shared";
 import type { Evidence } from "@claw-clinic/shared";
 
 export interface AIDiagnosisResult {
@@ -12,7 +8,7 @@ export interface AIDiagnosisResult {
   severity: string;
   reasoning: string;
   differential: Array<{ icd_ai_code: string; name: string; confidence: number }>;
-  treatmentSteps?: Array<{ action: string; description: string; requiresUserInput: boolean }>;
+  treatmentSteps: Array<{ action: string; command: string; expected_output: string; next: string }>;
   checks: Array<{ type: string; target: string; expect: string; label: string }>;
   fixes: Array<{ label: string; command: string; description: string }>;
 }
@@ -20,14 +16,14 @@ export interface AIDiagnosisResult {
 const SUBMIT_DIAGNOSIS_TOOL: Anthropic.Tool = {
   name: "submit_diagnosis",
   description:
-    "Submit a structured diagnosis. You MUST call this tool.",
+    "Submit a structured diagnosis with executable commands. You MUST call this tool.",
   input_schema: {
     type: "object" as const,
     properties: {
       icd_ai_code: {
         type: "string",
         description:
-          "ICD-AI code from catalog, or new Department.Number.Variant code.",
+          "A short diagnostic code in Department.Number.Variant format (e.g. CFG.1.1, NET.2.1, LOOP.1.1). Invent a code that fits the issue category.",
       },
       name: {
         type: "string",
@@ -43,7 +39,7 @@ const SUBMIT_DIAGNOSIS_TOOL: Anthropic.Tool = {
       },
       reasoning: {
         type: "string",
-        description: "1 sentence explaining the diagnosis.",
+        description: "1 sentence citing the specific evidence signal that confirms this diagnosis.",
       },
       differential: {
         type: "array",
@@ -63,13 +59,26 @@ const SUBMIT_DIAGNOSIS_TOOL: Anthropic.Tool = {
         items: {
           type: "object",
           properties: {
-            action: { type: "string" },
-            description: { type: "string" },
-            requires_user_input: { type: "boolean" },
+            action: {
+              type: "string",
+              description: "What this step does (2-5 words).",
+            },
+            command: {
+              type: "string",
+              description: "Exact shell command to run. Must be copy-pasteable into a terminal.",
+            },
+            expected_output: {
+              type: "string",
+              description: "What stdout/stderr should contain if the command succeeds. Use a grep-able string or exit code.",
+            },
+            next: {
+              type: "string",
+              description: "What to do after this step: 'run_next_step', 'verify_fix', or 'done'.",
+            },
           },
-          required: ["action", "description", "requires_user_input"],
+          required: ["action", "command", "expected_output", "next"],
         },
-        description: "ONLY for novel codes not in catalog. Max 3 steps.",
+        description: "Ordered treatment steps. Each step is an executable shell command. Max 5 steps.",
       },
       checks: {
         type: "array",
@@ -83,67 +92,100 @@ const SUBMIT_DIAGNOSIS_TOOL: Anthropic.Tool = {
           },
           required: ["type", "target", "expect", "label"],
         },
-        description: "2-4 local checks. Use exact config keys, file paths, URLs.",
+        description: "2-4 local verification checks. Only reference targets visible in the evidence.",
       },
       fixes: {
         type: "array",
         items: {
           type: "object",
           properties: {
-            label: { type: "string" },
-            command: { type: "string" },
-            description: { type: "string" },
+            label: { type: "string", description: "Short label (3-6 words)." },
+            command: { type: "string", description: "Exact shell command. Must work when pasted into terminal as-is." },
+            description: { type: "string", description: "What the command does and what output to expect (1 sentence)." },
           },
           required: ["label", "command", "description"],
         },
-        description: "2-3 fix options with exact terminal commands.",
+        description: "2-3 quick-fix options ordered fastest-first. Every fix MUST have an executable command.",
       },
     },
-    required: ["icd_ai_code", "name", "confidence", "severity", "reasoning", "differential", "checks", "fixes"],
+    required: ["icd_ai_code", "name", "confidence", "severity", "reasoning", "differential", "treatment_steps", "checks", "fixes"],
   },
 };
 
-// Cache the system prompt — disease catalog is static
-let _cachedSystemPrompt: string | undefined;
+const SYSTEM_PROMPT = `You are a diagnostic engine for OpenClaw AI coding agents (also Claude Code, Cursor, Copilot). You receive structured evidence from the agent's runtime and must identify the root cause and prescribe executable fixes.
 
-function buildSystemPrompt(): string {
-  if (_cachedSystemPrompt) return _cachedSystemPrompt;
+You have NO predefined disease catalog. Analyze the evidence from first principles every time.
 
-  // Compact disease catalog: code, name, severity, top 3 symptoms
-  const diseaseCatalog = MVP_DISEASES.map((d) => {
-    const symptoms = d.diagnostic_criteria.supporting_symptoms.slice(0, 3).join("; ");
-    return `${d.icd_ai_code} "${d.name}" [${d.severity}]: ${symptoms}`;
-  }).join("\n");
+## Triage — read evidence in this order, stop at first strong match
 
-  // Compact prescriptions: code → step count
-  const prescriptionCodes = STANDARD_PRESCRIPTIONS.map((p) =>
-    `${p.target_disease}(${p.steps.length} steps)`
-  ).join(", ");
+1. [Conn] reachable=false or auth=failed → connectivity/auth issue
+2. [Config] key=none or malformed → configuration issue
+3. [Runtime] loop=true → infinite loop. High error rate → tool failures
+4. [Runtime] high cost/tokens → cost explosion. High latency → performance issue
+5. [Behavior] + [Logs] → match symptoms to root cause
+6. No strong signal → use all context to infer most likely issue
 
-  _cachedSystemPrompt = `You diagnose AI coding agent issues (Claude Code, Cursor, Copilot, etc).
+## Evidence Field Reference
 
-## Disease Catalog
-${diseaseCatalog}
+Evidence arrives in this format:
+  [Config] key=<masked> provider=<name> endpoint=<url> + Errors: <msgs>
+  [Conn] <provider>: reachable=<bool> auth=<status> latency=<ms> err=<msg>
+  [Runtime] steps=<n> errors=<n> tools=<called>/<succeeded> loop=<bool> cost=$<usd> latency=<ms>
+  [Behavior] <description> + symptom list
+  [Logs] <semicolon-separated error patterns>
+  [Env] OS=<os> Node=<ver> OpenClaw=<ver>
 
-## Diseases with standard prescriptions
-${prescriptionCodes}
+Key derivations: error_rate = errors/steps. tool_success_rate = succeeded/called.
 
-## Rules
-1. Match known diseases first. Use exact ICD-AI code.
-2. Novel codes: use Department.Number.Variant format, include treatment_steps (max 3).
-3. reasoning: exactly 1 sentence.
-4. checks: 2-4 items with exact config key paths, file paths, or URLs.
-5. fixes: 2-3 options with exact terminal commands (prefer "openclaw config set ...").
-6. differential: top 2-3 alternatives only.
-7. Do NOT include treatment_steps for known catalog codes.
+## ICD-AI Code Format
 
-## Key Distinctions
-- Loop (E.1.1): repeated identical tool calls. Hang: single call never returns.
-- Cost (C.1.1): high spend/tokens. Latency (C.2.1): slow response time.
-- Config (CFG.*): agent config files. Platform: external platform settings.`;
+Create a diagnostic code in Department.Number.Variant format. Common departments:
+  CFG = Configuration   NET = Network/Connectivity   AUTH = Authentication
+  LOOP = Repetition     COST = Cost/Token            PERF = Performance/Latency
+  TOOL = Tool Failures  PERM = Permissions           CTX = Context/Memory
+  GEN = Generation      SEC = Security               SYS = System/Infrastructure
 
-  return _cachedSystemPrompt;
-}
+Example: CFG.1.1 = missing API key, NET.1.1 = provider unreachable, LOOP.1.1 = infinite tool loop
+
+## Output Rules — EXECUTABLE COMMANDS ONLY
+
+Your output must be machine-actionable. Follow these rules strictly:
+
+1. ALL fixes must contain an exact shell command that works when pasted into a terminal.
+2. ALL treatment_steps must contain an exact shell command and its expected output.
+3. Do NOT write prose, explanations, or suggestions without a command. If you can't provide a command, skip the step.
+4. Commands must be concrete — no placeholders like <YOUR_KEY> unless absolutely unavoidable. Use evidence values.
+5. Order fixes fastest-first. Fix #1 should be a single command that gets the user unstuck immediately.
+6. Order treatment_steps sequentially — each step builds on the previous.
+7. expected_output must be a specific string or pattern the user can grep for to verify success.
+8. description in fixes must state what the command does and what success looks like, not why.
+
+## OpenClaw Commands (prefer these in fixes)
+
+  sudo systemctl restart openclaw-gateway    # restart the agent gateway
+  openclaw config set <key> <value>          # update a config key
+  openclaw config get <key>                  # read a config value
+  openclaw health                            # check agent health
+  openclaw session reset                     # clear current session
+  openclaw cache clear                       # purge cached state
+  journalctl -u openclaw-gateway --since "5 min ago"  # recent logs
+  cat ~/.config/openclaw/config.json         # view config
+  cat ~/.config/openclaw/auth-profiles.json  # view auth config
+
+## Checks
+
+Each check runs locally on the agent's machine. Be concrete:
+- check_connectivity: target = provider name FROM THE EVIDENCE. Pings provider and tests auth.
+- check_file: target = absolute file path. Checks if file exists.
+- check_config: target = config key visible in evidence. Do NOT guess key names.
+- check_process: target = process name. Checks if running.
+
+## Confidence Calibration
+
+0.9+ = evidence directly confirms the issue
+0.7-0.89 = strong match with minor ambiguity
+0.5-0.69 = plausible, weak direct evidence
+<0.5 = speculative`;
 
 function serializeEvidence(evidence: Evidence[], symptoms?: string): string {
   const parts: string[] = [];
@@ -199,9 +241,9 @@ export async function aiDiagnose(
 
   try {
     const response = await client.messages.create({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-6",
       max_tokens: 1024,
-      system: buildSystemPrompt(),
+      system: SYSTEM_PROMPT,
       tools: [SUBMIT_DIAGNOSIS_TOOL],
       tool_choice: { type: "tool", name: "submit_diagnosis" },
       messages: [{ role: "user", content: userMessage }],
@@ -225,14 +267,13 @@ export async function aiDiagnose(
       differential: (input.differential as Array<{ icd_ai_code: string; name: string; confidence: number }>) || [],
       checks: (input.checks as Array<{ type: string; target: string; expect: string; label: string }>) || [],
       fixes: (input.fixes as Array<{ label: string; command: string; description: string }>) || [],
-      treatmentSteps: (input.treatment_steps as Array<{ action: string; description: string; requires_user_input: boolean }> | undefined)
-        ?.map((s) => ({ action: s.action, description: s.description, requiresUserInput: s.requires_user_input ?? false })),
+      treatmentSteps: ((input.treatment_steps as Array<{ action: string; command: string; expected_output: string; next: string }>) || []),
     };
   } catch {
-    // AI unavailable — fall back to rule-based
+    // AI unavailable
     return null;
   }
 }
 
 // Re-export for testing
-export { buildSystemPrompt as _buildSystemPrompt, serializeEvidence as _serializeEvidence };
+export { SYSTEM_PROMPT as _systemPrompt, serializeEvidence as _serializeEvidence };

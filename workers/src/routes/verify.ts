@@ -1,228 +1,113 @@
 import { Hono } from "hono";
-import { MVP_DISEASES } from "@claw-clinic/shared";
+import Anthropic from "@anthropic-ai/sdk";
 import type { Evidence, VerificationStep, VerificationPlanResponse, VerificationConfidence } from "@claw-clinic/shared";
 
-// ─── Threshold-to-verification mapping ──────────────────────────
+// ─── AI-generated verification plan ──────────────────────────────
 
-interface ThresholdCheck {
-  type: VerificationStep["type"];
-  description: string;
-  instruction: string;
-  confidence: VerificationConfidence;
-  successCondition: string;
-  paramKey: string;
-}
-
-const THRESHOLD_CHECKS: Record<string, ThresholdCheck> = {
-  loop_count: {
-    type: "check_logs",
-    description: "Check if repetitive tool-call loops have stopped",
-    instruction: "Examine recent agent traces for repeated identical tool calls",
-    confidence: "low",
-    successCondition: "loop_count has dropped below the diagnostic threshold",
-    paramKey: "loop_count",
-  },
-  output_diversity_score: {
-    type: "check_logs",
-    description: "Check if agent output diversity has improved",
-    instruction: "Analyze recent agent outputs for variety in tool usage and responses",
-    confidence: "low",
-    successCondition: "output_diversity_score has risen above the diagnostic threshold",
-    paramKey: "output_diversity_score",
-  },
-  error_rate: {
-    type: "check_logs",
-    description: "Check if error rate has decreased",
-    instruction: "Review recent agent interactions for error frequency",
-    confidence: "medium",
-    successCondition: "error_rate has dropped below the diagnostic threshold",
-    paramKey: "error_rate",
-  },
-  tool_success_rate: {
-    type: "check_logs",
-    description: "Check if tool success rate has improved",
-    instruction: "Review recent tool call results for success/failure ratio",
-    confidence: "medium",
-    successCondition: "tool_success_rate has risen above the diagnostic threshold",
-    paramKey: "tool_success_rate",
-  },
-  token_velocity: {
-    type: "check_logs",
-    description: "Check if token consumption rate has normalized",
-    instruction: "Measure tokens consumed per minute in recent interactions",
-    confidence: "medium",
-    successCondition: "token_velocity has dropped below the diagnostic threshold",
-    paramKey: "token_velocity",
-  },
-  cost_total_usd: {
-    type: "check_logs",
-    description: "Check if session cost is within acceptable bounds",
-    instruction: "Review total cost of recent sessions",
-    confidence: "medium",
-    successCondition: "cost_total_usd is below the diagnostic threshold",
-    paramKey: "cost_total_usd",
-  },
-  step_count: {
-    type: "check_logs",
-    description: "Check if step count is within normal range",
-    instruction: "Count the number of steps in recent agent sessions",
-    confidence: "medium",
-    successCondition: "step_count is below the diagnostic threshold",
-    paramKey: "step_count",
-  },
-  latency_p95_ms: {
-    type: "check_connectivity",
-    description: "Check if response latency has improved",
-    instruction: "Measure P95 response latency for recent API calls",
-    confidence: "medium",
-    successCondition: "latency_p95_ms is below the diagnostic threshold",
-    paramKey: "latency_p95_ms",
-  },
-  context_utilization: {
-    type: "check_logs",
-    description: "Check context window utilization",
-    instruction: "Measure what fraction of the context window is being used",
-    confidence: "low",
-    successCondition: "context_utilization is within normal bounds",
-    paramKey: "context_utilization",
-  },
-  unique_tools: {
-    type: "check_logs",
-    description: "Check tool usage diversity",
-    instruction: "Count unique tools used in recent agent sessions",
-    confidence: "low",
-    successCondition: "unique_tools count is within expected range",
-    paramKey: "unique_tools",
+const VERIFY_TOOL: Anthropic.Tool = {
+  name: "submit_verification_plan",
+  description: "Submit a verification plan with executable checks.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      steps: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            type: {
+              type: "string",
+              enum: ["check_config", "check_connectivity", "check_file", "check_process", "check_logs", "custom"],
+            },
+            description: { type: "string" },
+            command: {
+              type: "string",
+              description: "Shell command to verify this check. Must be executable.",
+            },
+            expected_output: {
+              type: "string",
+              description: "What stdout should contain if the check passes.",
+            },
+            confidence: {
+              type: "string",
+              enum: ["low", "medium", "high"],
+            },
+          },
+          required: ["type", "description", "command", "expected_output", "confidence"],
+        },
+      },
+    },
+    required: ["steps"],
   },
 };
 
-// ─── CFG-specific verification steps ────────────────────────────
+const VERIFY_SYSTEM_PROMPT = `You generate verification plans for AI agent issues. Given a disease code, disease name, and optional evidence, produce 2-5 executable verification steps that confirm whether the issue has been resolved.
 
-const CFG_CHECKS: Record<string, VerificationStep[]> = {
-  "CFG.1.1": [
-    {
-      id: "verify_key_format",
-      type: "check_config",
-      description: "Validate API key format",
-      instruction: "Check that the API key matches the expected provider format (prefix, length, character set)",
-      confidence: "high",
-      params: { target: "api_key", check: "format_validation" },
-      successCondition: "API key passes format validation for the detected provider",
-    },
-  ],
-  "CFG.1.2": [
-    {
-      id: "verify_key_present",
-      type: "check_config",
-      description: "Check API key is configured",
-      instruction: "Check openclaw.json and auth-profiles.json for a non-empty API key",
-      confidence: "high",
-      params: { paths: ["~/.openclaw/openclaw.json", "~/.openclaw/agents/*/agent/auth-profiles.json"], key: "apiKey" },
-      successCondition: "A non-empty API key exists in configuration",
-    },
-  ],
-  "CFG.2.1": [
-    {
-      id: "verify_endpoint_reachable",
-      type: "check_connectivity",
-      description: "Check AI provider endpoint reachability",
-      instruction: "Send a HEAD request to all configured AI provider endpoints",
-      confidence: "high",
-      params: { endpoints: ["https://api.anthropic.com", "https://api.openai.com"] },
-      successCondition: "All configured endpoints return a response with status < 500",
-    },
-  ],
-  "CFG.3.1": [
-    {
-      id: "verify_auth_passes",
-      type: "check_connectivity",
-      description: "Verify API key authentication",
-      instruction: "Send an authenticated request to the AI provider and check for 401/403 responses",
-      confidence: "high",
-      params: { endpoints: ["https://api.anthropic.com/v1/messages", "https://api.openai.com/v1/models"] },
-      successCondition: "Authentication succeeds (no 401 or 403 response)",
-    },
-  ],
-  "O.4.1": [
-    {
-      id: "verify_permissions_config",
-      type: "check_config",
-      description: "Check openclaw permission configuration",
-      instruction: "Inspect openclaw.json and workspace settings for restrictedMode, permission deny rules, or sandbox settings that block exec/fs tools",
-      confidence: "high",
-      params: { target: "permissions", check: "tool_access" },
-      successCondition: "No permission deny rules or restricted mode settings are blocking exec/fs tools",
-    },
-    {
-      id: "verify_tool_access",
-      type: "check_file",
-      description: "Check security policy files for deny rules",
-      instruction: "Look for security policy or permission configuration files (e.g. .openclaw/security-policy.json, .openclaw/permissions.json) that may contain tool deny rules",
-      confidence: "medium",
-      params: { paths: ["~/.openclaw/security-policy.json", "~/.openclaw/permissions.json", ".openclaw/settings.json"] },
-      successCondition: "No security policy files contain deny rules for exec or filesystem tools",
-    },
-    {
-      id: "verify_tool_execution",
-      type: "custom",
-      description: "Verify exec/fs tools are now accessible",
-      instruction: "Attempt a simple tool call (e.g. list files in current directory) to confirm tools are no longer blocked",
-      confidence: "high",
-      params: { test_tool: "fs_read", test_action: "list_directory" },
-      successCondition: "A test tool call to exec or fs tools succeeds without permission errors",
-    },
-  ],
-};
+Rules:
+1. Every step MUST have an executable shell command.
+2. expected_output must be a specific string or pattern to grep for.
+3. Order steps from most definitive to least.
+4. Prefer commands that produce clear pass/fail output.
 
-// ─── Plan generation ────────────────────────────────────────────
+OpenClaw commands available:
+  openclaw health                            # check agent health
+  openclaw config get <key>                  # read config value
+  cat ~/.config/openclaw/config.json         # view config
+  cat ~/.config/openclaw/auth-profiles.json  # view auth
+  curl -s -o /dev/null -w "%{http_code}" <url>  # test endpoint
+  journalctl -u openclaw-gateway --since "5 min ago"  # recent logs`;
 
-function generateVerificationPlan(diagnosisCode: string): VerificationStep[] {
-  // Check for CFG-specific hardcoded steps first
-  const cfgSteps = CFG_CHECKS[diagnosisCode];
-  if (cfgSteps) {
-    return cfgSteps;
+async function generateVerificationPlan(
+  diseaseCode: string,
+  diseaseName: string,
+  evidence?: Evidence[],
+): Promise<VerificationStep[]> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return [];
+
+  const client = new Anthropic({ apiKey });
+
+  let userMessage = `Disease: ${diseaseName} (${diseaseCode})`;
+  if (evidence?.length) {
+    userMessage += `\n\nEvidence:\n${evidence.map((e) => JSON.stringify(e)).join("\n")}`;
   }
 
-  // Find the disease definition
-  const disease = MVP_DISEASES.find((d) => d.icd_ai_code === diagnosisCode);
-  if (!disease) {
+  try {
+    const response = await client.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 512,
+      system: VERIFY_SYSTEM_PROMPT,
+      tools: [VERIFY_TOOL],
+      tool_choice: { type: "tool", name: "submit_verification_plan" },
+      messages: [{ role: "user", content: userMessage }],
+    });
+
+    const toolUse = response.content.find(
+      (block): block is Anthropic.ToolUseBlock => block.type === "tool_use",
+    );
+
+    if (!toolUse) return [];
+
+    const input = toolUse.input as { steps: Array<{
+      type: string;
+      description: string;
+      command: string;
+      expected_output: string;
+      confidence: string;
+    }> };
+
+    return input.steps.map((step, i) => ({
+      id: `verify_${i + 1}`,
+      type: step.type as VerificationStep["type"],
+      description: step.description,
+      instruction: step.command,
+      confidence: step.confidence as VerificationConfidence,
+      params: { command: step.command, expected_output: step.expected_output },
+      successCondition: step.expected_output,
+    }));
+  } catch {
     return [];
   }
-
-  const steps: VerificationStep[] = [];
-  let stepIndex = 1;
-
-  // Generate steps from vital sign thresholds
-  const thresholds = disease.diagnostic_criteria.vital_sign_thresholds;
-  for (const [key, thresholdValue] of Object.entries(thresholds)) {
-    const check = THRESHOLD_CHECKS[key];
-    if (check) {
-      steps.push({
-        id: `verify_${stepIndex++}`,
-        type: check.type,
-        description: check.description,
-        instruction: check.instruction,
-        confidence: check.confidence,
-        params: { metric: check.paramKey, threshold: thresholdValue },
-        successCondition: check.successCondition,
-      });
-    }
-  }
-
-  // Generate a supporting-symptom check if the disease has text-based symptoms
-  if (disease.diagnostic_criteria.supporting_symptoms.length > 0) {
-    steps.push({
-      id: `verify_${stepIndex++}`,
-      type: "custom",
-      description: `Check for absence of ${disease.name} symptoms`,
-      instruction: `Verify that the following symptoms are no longer present: ${disease.diagnostic_criteria.supporting_symptoms.slice(0, 3).join("; ")}`,
-      confidence: "low",
-      params: { symptoms: disease.diagnostic_criteria.supporting_symptoms },
-      successCondition: "None of the supporting symptoms are actively observed",
-    });
-  }
-
-  return steps;
 }
 
 // ─── Route ──────────────────────────────────────────────────────
@@ -233,21 +118,25 @@ verifyRouter.post("/", async (c) => {
   try {
     const body = await c.req.json<{
       diseaseCode: string;
+      diseaseName?: string;
       evidence?: Evidence[];
     }>();
 
-    const { diseaseCode } = body;
+    const { diseaseCode, diseaseName, evidence } = body;
 
     if (!diseaseCode) {
       return c.json({ error: "diseaseCode is required" }, 400);
     }
 
-    const disease = MVP_DISEASES.find((d) => d.icd_ai_code === diseaseCode);
-    const steps = generateVerificationPlan(diseaseCode);
+    const steps = await generateVerificationPlan(
+      diseaseCode,
+      diseaseName || "Unknown",
+      evidence,
+    );
 
     return c.json({
       diseaseCode,
-      diseaseName: disease?.name ?? "Unknown",
+      diseaseName: diseaseName || "Unknown",
       steps,
     } satisfies VerificationPlanResponse);
   } catch (err) {

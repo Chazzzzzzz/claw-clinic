@@ -1,5 +1,16 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { app } from "../../server.js";
+
+// Mock Anthropic SDK for verify route
+const mockCreate = vi.fn();
+vi.mock("@anthropic-ai/sdk", () => {
+  return {
+    default: class MockAnthropic {
+      constructor() {}
+      messages = { create: mockCreate };
+    },
+  };
+});
 
 async function postVerify(body: unknown) {
   const res = await app.request("/verify", {
@@ -11,51 +22,72 @@ async function postVerify(body: unknown) {
 }
 
 describe("POST /verify", () => {
-  it("returns a verification plan for E.1.1 (Infinite Loop)", async () => {
-    const { status, json } = await postVerify({
-      diseaseCode: "E.1.1",
-    });
+  const originalKey = process.env.ANTHROPIC_API_KEY;
 
-    expect(status).toBe(200);
-    expect(json.diseaseCode).toBe("E.1.1");
-    expect(json.steps).toBeDefined();
-    expect(Array.isArray(json.steps)).toBe(true);
-    expect(json.steps.length).toBeGreaterThan(0);
+  beforeEach(() => {
+    mockCreate.mockReset();
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test-key";
+  });
 
-    // Each step should have required fields
-    for (const step of json.steps) {
-      expect(step.type).toBeDefined();
-      expect(step.description).toBeDefined();
+  afterEach(() => {
+    if (originalKey !== undefined) {
+      process.env.ANTHROPIC_API_KEY = originalKey;
+    } else {
+      delete process.env.ANTHROPIC_API_KEY;
     }
   });
 
-  it("returns a verification plan for C.1.1 (Cost Explosion)", async () => {
+  it("returns AI-generated verification steps", async () => {
+    mockCreate.mockResolvedValueOnce({
+      content: [
+        {
+          type: "tool_use",
+          id: "toolu_v1",
+          name: "submit_verification_plan",
+          input: {
+            steps: [
+              {
+                type: "check_connectivity",
+                description: "Test API connectivity",
+                command: "openclaw health",
+                expected_output: "healthy",
+                confidence: "high",
+              },
+              {
+                type: "check_config",
+                description: "Verify API key present",
+                command: "openclaw config get apiKey",
+                expected_output: "sk-ant",
+                confidence: "high",
+              },
+            ],
+          },
+        },
+      ],
+    });
+
     const { status, json } = await postVerify({
-      diseaseCode: "C.1.1",
+      diseaseCode: "CFG.1.2",
+      diseaseName: "API Key Missing",
     });
 
     expect(status).toBe(200);
-    expect(json.diseaseCode).toBe("C.1.1");
-    expect(json.steps.length).toBeGreaterThan(0);
+    expect(json.diseaseCode).toBe("CFG.1.2");
+    expect(json.steps).toHaveLength(2);
+    expect(json.steps[0].type).toBe("check_connectivity");
+    expect(json.steps[1].type).toBe("check_config");
   });
 
-  it("returns a verification plan for O.1.1 (Output Quality)", async () => {
+  it("returns empty steps when AI is unavailable", async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+
     const { status, json } = await postVerify({
-      diseaseCode: "O.1.1",
+      diseaseCode: "UNKNOWN.1.1",
+      diseaseName: "Unknown Issue",
     });
 
     expect(status).toBe(200);
-    expect(json.diseaseCode).toBe("O.1.1");
-    expect(json.steps.length).toBeGreaterThan(0);
-  });
-
-  it("returns empty steps for unknown disease codes", async () => {
-    const { status, json } = await postVerify({
-      diseaseCode: "UNKNOWN.99.99",
-    });
-
-    expect(status).toBe(200);
-    expect(json.diseaseCode).toBe("UNKNOWN.99.99");
+    expect(json.diseaseCode).toBe("UNKNOWN.1.1");
     expect(json.steps).toEqual([]);
   });
 
@@ -79,16 +111,31 @@ describe("POST /verify", () => {
     expect(res.status).toBe(400);
   });
 
-  it("verification plan steps have valid step types", async () => {
-    const { json } = await postVerify({ diseaseCode: "E.1.1" });
+  it("verification steps have valid step types", async () => {
+    mockCreate.mockResolvedValueOnce({
+      content: [
+        {
+          type: "tool_use",
+          id: "toolu_v2",
+          name: "submit_verification_plan",
+          input: {
+            steps: [
+              { type: "check_logs", description: "Check for loop patterns", command: "journalctl -u openclaw-gateway --since '5 min ago' | grep loop", expected_output: "0 matches", confidence: "medium" },
+              { type: "check_process", description: "Verify gateway running", command: "systemctl is-active openclaw-gateway", expected_output: "active", confidence: "high" },
+            ],
+          },
+        },
+      ],
+    });
+
+    const { json } = await postVerify({
+      diseaseCode: "LOOP.1.1",
+      diseaseName: "Infinite Loop",
+    });
 
     const validTypes = [
-      "check_file",
-      "check_connectivity",
-      "check_config",
-      "check_process",
-      "check_logs",
-      "custom",
+      "check_file", "check_connectivity", "check_config",
+      "check_process", "check_logs", "custom",
     ];
 
     for (const step of json.steps) {
@@ -96,40 +143,35 @@ describe("POST /verify", () => {
     }
   });
 
-  it("returns O.4.1-specific verification steps for Tool Permission Denial", async () => {
-    const { status, json } = await postVerify({
-      diseaseCode: "O.4.1",
+  it("returns different plans for different diseases", async () => {
+    // First call
+    mockCreate.mockResolvedValueOnce({
+      content: [{
+        type: "tool_use",
+        id: "t1",
+        name: "submit_verification_plan",
+        input: {
+          steps: [{ type: "check_logs", description: "Check loop count", command: "echo loop", expected_output: "0", confidence: "high" }],
+        },
+      }],
+    });
+    // Second call
+    mockCreate.mockResolvedValueOnce({
+      content: [{
+        type: "tool_use",
+        id: "t2",
+        name: "submit_verification_plan",
+        input: {
+          steps: [{ type: "check_logs", description: "Check cost metrics", command: "echo cost", expected_output: "ok", confidence: "high" }],
+        },
+      }],
     });
 
-    expect(status).toBe(200);
-    expect(json.diseaseCode).toBe("O.4.1");
-    expect(json.diseaseName).toBe("Tool Permission Denial");
-    expect(json.steps.length).toBe(3);
-
-    // Should have permission config check, file check, and tool execution check
-    const types = json.steps.map((s: { type: string }) => s.type);
-    expect(types).toContain("check_config");
-    expect(types).toContain("check_file");
-    expect(types).toContain("custom");
-
-    // Verify the steps have meaningful descriptions
-    const descriptions = json.steps.map((s: { description: string }) => s.description).join(" ");
-    expect(descriptions).toMatch(/permission/i);
-  });
-
-  it("returns different verification plans for different disease codes", async () => {
     const [loop, cost] = await Promise.all([
-      postVerify({ diseaseCode: "E.1.1" }),
-      postVerify({ diseaseCode: "C.1.1" }),
+      postVerify({ diseaseCode: "LOOP.1.1", diseaseName: "Infinite Loop" }),
+      postVerify({ diseaseCode: "COST.1.1", diseaseName: "Cost Explosion" }),
     ]);
 
-    // Different diseases should have different verification plans
-    // (at minimum, different descriptions or step types)
     expect(loop.json.diseaseCode).not.toBe(cost.json.diseaseCode);
-    if (loop.json.steps.length > 0 && cost.json.steps.length > 0) {
-      const loopDescriptions = loop.json.steps.map((s: { description: string }) => s.description);
-      const costDescriptions = cost.json.steps.map((s: { description: string }) => s.description);
-      expect(loopDescriptions).not.toEqual(costDescriptions);
-    }
   });
 });

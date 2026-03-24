@@ -3,7 +3,7 @@ import { app } from "../../server.js";
 
 // Mock the AI diagnostician module
 vi.mock("../../ai-diagnostician.js", () => ({
-  aiDiagnose: vi.fn().mockResolvedValue(null), // default: AI unavailable → fallback
+  aiDiagnose: vi.fn().mockResolvedValue(null), // default: AI unavailable
 }));
 
 import { aiDiagnose } from "../../ai-diagnostician.js";
@@ -21,10 +21,10 @@ async function postDiagnose(body: unknown) {
 describe("POST /diagnose", () => {
   beforeEach(() => {
     mockAiDiagnose.mockReset();
-    mockAiDiagnose.mockResolvedValue(null); // default fallback
+    mockAiDiagnose.mockResolvedValue(null);
   });
 
-  // ─── All diagnosis goes through AI ────────────────────────────────
+  // ─── AI diagnosis ──────────────────────────────────────────────
 
   it("sends config evidence to AI for diagnosis", async () => {
     mockAiDiagnose.mockResolvedValueOnce({
@@ -34,6 +34,9 @@ describe("POST /diagnose", () => {
       severity: "Critical",
       reasoning: "No API key is configured.",
       differential: [],
+      treatmentSteps: [
+        { action: "Set API key", command: "openclaw config set apiKey sk-ant-...", expected_output: "ok", next: "done" },
+      ],
       checks: [
         { type: "check_config", target: "apiKey", expect: "present", label: "API key configured" },
       ],
@@ -54,26 +57,27 @@ describe("POST /diagnose", () => {
     expect(status).toBe(200);
     expect(json.diagnosis.icd_ai_code).toBe("CFG.1.2");
     expect(json.diagnosis.name).toBe("API Key Missing");
-    expect(json.checks).toBeDefined();
     expect(json.checks).toHaveLength(1);
-    expect(json.fixes).toBeDefined();
     expect(json.fixes).toHaveLength(1);
     expect(mockAiDiagnose).toHaveBeenCalledOnce();
   });
 
   it("sends connectivity evidence to AI for diagnosis", async () => {
     mockAiDiagnose.mockResolvedValueOnce({
-      icd_ai_code: "CFG.3.1",
+      icd_ai_code: "AUTH.1.1",
       name: "Auth Failure",
       confidence: 0.95,
       severity: "Critical",
       reasoning: "API key rejected by provider.",
       differential: [],
+      treatmentSteps: [
+        { action: "Regenerate key", command: "openclaw auth refresh", expected_output: "ok", next: "done" },
+      ],
       checks: [
-        { type: "check_connectivity", target: "https://api.anthropic.com", expect: "reachable", label: "Anthropic API reachable" },
+        { type: "check_connectivity", target: "anthropic", expect: "auth=ok", label: "Anthropic auth working" },
       ],
       fixes: [
-        { label: "Regenerate API key", command: "openclaw auth refresh", description: "Refresh your authentication credentials" },
+        { label: "Regenerate API key", command: "openclaw auth refresh", description: "Refresh authentication credentials" },
       ],
     });
 
@@ -89,7 +93,7 @@ describe("POST /diagnose", () => {
     });
 
     expect(status).toBe(200);
-    expect(json.diagnosis.icd_ai_code).toBe("CFG.3.1");
+    expect(json.diagnosis.icd_ai_code).toBe("AUTH.1.1");
     expect(json.checks).toBeDefined();
     expect(json.fixes).toBeDefined();
     expect(mockAiDiagnose).toHaveBeenCalledOnce();
@@ -103,6 +107,9 @@ describe("POST /diagnose", () => {
       severity: "Moderate",
       reasoning: "The configured endpoint URL is invalid.",
       differential: [],
+      treatmentSteps: [
+        { action: "Reset endpoint", command: "openclaw config set endpoint.url https://api.anthropic.com", expected_output: "ok", next: "done" },
+      ],
       checks: [
         { type: "check_config", target: "endpoint.url", expect: "valid_url", label: "Endpoint URL valid" },
       ],
@@ -127,17 +134,19 @@ describe("POST /diagnose", () => {
     expect(mockAiDiagnose).toHaveBeenCalledOnce();
   });
 
-  // ─── AI diagnosis with known vs novel codes ───────────────────────
-
-  it("uses AI diagnosis with known disease code and standard prescriptions", async () => {
+  it("returns AI-generated treatment steps", async () => {
     mockAiDiagnose.mockResolvedValueOnce({
-      icd_ai_code: "O.4.1",
+      icd_ai_code: "PERM.1.1",
       name: "Tool Permission Denial",
       confidence: 0.92,
       severity: "High",
       reasoning: "Agent cannot write files due to permission restrictions.",
       differential: [
-        { icd_ai_code: "O.1.1", name: "Tool Calling Fracture", confidence: 0.25 },
+        { icd_ai_code: "TOOL.1.1", name: "Tool Calling Fracture", confidence: 0.25 },
+      ],
+      treatmentSteps: [
+        { action: "Allow exec", command: "openclaw config set tools.exec.restricted false", expected_output: "ok", next: "verify_fix" },
+        { action: "Restart gateway", command: "sudo systemctl restart openclaw-gateway", expected_output: "active (running)", next: "done" },
       ],
       checks: [
         { type: "check_config", target: "tools.exec.restricted", expect: "false", label: "Tool execution unrestricted" },
@@ -152,62 +161,23 @@ describe("POST /diagnose", () => {
     });
 
     expect(status).toBe(200);
-    expect(json.diagnosis.icd_ai_code).toBe("O.4.1");
-    expect(json.diagnosis.name).toBe("Tool Permission Denial");
-    expect(json.diagnosis.confidence).toBe(0.92);
-    expect(json.diagnosis.severity).toBe("High");
-    expect(json.differential).toHaveLength(1);
-    expect(json.differential[0].icd_ai_code).toBe("O.1.1");
-    expect(json.treatmentPlan).toBeDefined();
-    expect(json.isNovelCode).toBe(false);
+    expect(json.diagnosis.icd_ai_code).toBe("PERM.1.1");
+    expect(json.treatmentPlan).toHaveLength(2);
+    expect(json.treatmentPlan[0].description).toBe("openclaw config set tools.exec.restricted false");
     expect(json.checks).toHaveLength(1);
     expect(json.fixes).toHaveLength(1);
     expect(mockAiDiagnose).toHaveBeenCalledOnce();
   });
 
-  it("uses AI-generated treatment steps for novel diagnosis", async () => {
+  it("returns empty treatment plan when AI returns no steps", async () => {
     mockAiDiagnose.mockResolvedValueOnce({
-      icd_ai_code: "NOVEL.1.1",
-      name: "Context Window Overflow",
-      confidence: 0.8,
-      severity: "Moderate",
-      reasoning: "Agent has consumed its entire context window.",
-      differential: [],
-      checks: [
-        { type: "check_process", target: "openclaw", expect: "running", label: "OpenClaw process running" },
-      ],
-      fixes: [
-        { label: "Reset context window", command: "openclaw context reset", description: "Clear the current context window" },
-      ],
-      treatmentSteps: [
-        { action: "reset_context", description: "Clear context and restart.", requiresUserInput: false },
-        { action: "reduce_input", description: "Reduce input size.", requiresUserInput: true },
-      ],
-    });
-
-    const { status, json } = await postDiagnose({
-      symptoms: "agent stopped responding mid-task",
-    });
-
-    expect(status).toBe(200);
-    expect(json.diagnosis.icd_ai_code).toBe("NOVEL.1.1");
-    expect(json.diagnosis.name).toBe("Context Window Overflow");
-    expect(json.isNovelCode).toBe(true);
-    expect(json.treatmentPlan).toHaveLength(2);
-    expect(json.treatmentPlan[0].description).toBe("Clear context and restart.");
-    expect(json.treatmentPlan[0].requiresUserInput).toBe(false);
-    expect(json.treatmentPlan[1].requiresUserInput).toBe(true);
-    expect(json.treatmentPlan[1].inputPrompt).toBe("Reduce input size.");
-  });
-
-  it("returns empty treatment plan for novel diagnosis without AI steps", async () => {
-    mockAiDiagnose.mockResolvedValueOnce({
-      icd_ai_code: "NOVEL.2.1",
+      icd_ai_code: "UNKNOWN.1.1",
       name: "Some Unknown Issue",
       confidence: 0.6,
       severity: "Low",
       reasoning: "Unclear symptoms.",
       differential: [],
+      treatmentSteps: [],
       checks: [],
       fixes: [],
     });
@@ -217,58 +187,39 @@ describe("POST /diagnose", () => {
     });
 
     expect(status).toBe(200);
-    expect(json.diagnosis.icd_ai_code).toBe("NOVEL.2.1");
-    expect(json.isNovelCode).toBe(true);
+    expect(json.diagnosis.icd_ai_code).toBe("UNKNOWN.1.1");
     expect(json.treatmentPlan).toEqual([]);
   });
 
-  // ─── Rule-based fallback (AI returns null) ───────────────────────
+  // ─── AI unavailable ────────────────────────────────────────────
 
-  it("falls back to rule-based for behavior evidence when AI unavailable", async () => {
+  it("returns null diagnosis when AI is unavailable", async () => {
     const { status, json } = await postDiagnose({
       evidence: [
         {
           type: "behavior",
-          description: "The agent is stuck in a loop calling the same tool repeatedly",
-          symptoms: ["Same tool called repeatedly", "No progress being made"],
+          description: "The agent is stuck in a loop",
         },
       ],
     });
 
     expect(status).toBe(200);
-    expect(json.diagnosis).not.toBeNull();
-    expect(json.diagnosis.icd_ai_code).toBeDefined();
-    expect(json.sessionId).toBeDefined();
-    expect(json.summary).toBeDefined();
-    expect(json.checks).toEqual([]);
-    expect(json.fixes).toEqual([]);
+    expect(json.diagnosis).toBeNull();
+    expect(json.summary).toContain("unavailable");
     expect(mockAiDiagnose).toHaveBeenCalledOnce();
   });
 
-  it("falls back to rule-based for explicit symptoms when AI unavailable", async () => {
-    const { status, json } = await postDiagnose({
-      symptoms: "agent is stuck in a loop repeating the same action",
-    });
-
-    expect(status).toBe(200);
-    expect(json.diagnosis).not.toBeNull();
-    expect(json.diagnosis.icd_ai_code).toBeDefined();
-    expect(json.checks).toEqual([]);
-    expect(json.fixes).toEqual([]);
-    expect(mockAiDiagnose).toHaveBeenCalledOnce();
-  });
-
-  it("returns null diagnosis when no evidence or symptoms given", async () => {
+  it("returns null diagnosis when no evidence or symptoms given and AI unavailable", async () => {
     const { status, json } = await postDiagnose({
       evidence: [],
     });
 
     expect(status).toBe(200);
     expect(json.diagnosis).toBeNull();
-    expect(json.summary).toContain("No diagnosis");
+    expect(json.summary).toContain("unavailable");
   });
 
-  // ─── Edge cases ───────────────────────────────────────────────────
+  // ─── Edge cases ───────────────────────────────────────────────
 
   it("returns 400 for invalid request body", async () => {
     const res = await app.request("/diagnose", {
@@ -281,6 +232,22 @@ describe("POST /diagnose", () => {
   });
 
   it("includes treatmentPlan array in response", async () => {
+    mockAiDiagnose.mockResolvedValueOnce({
+      icd_ai_code: "LOOP.1.1",
+      name: "Infinite Loop",
+      confidence: 0.9,
+      severity: "Critical",
+      reasoning: "Agent is repeating the same tool call.",
+      differential: [],
+      treatmentSteps: [
+        { action: "Reset session", command: "openclaw session reset", expected_output: "Session reset", next: "done" },
+      ],
+      checks: [],
+      fixes: [
+        { label: "Reset session", command: "openclaw session reset", description: "Clear current session" },
+      ],
+    });
+
     const { status, json } = await postDiagnose({
       evidence: [
         {
@@ -295,18 +262,33 @@ describe("POST /diagnose", () => {
     expect(Array.isArray(json.treatmentPlan)).toBe(true);
   });
 
-  it("includes differential diagnoses in fallback", async () => {
+  it("includes differential diagnoses from AI", async () => {
+    mockAiDiagnose.mockResolvedValueOnce({
+      icd_ai_code: "LOOP.1.1",
+      name: "Infinite Loop",
+      confidence: 0.85,
+      severity: "High",
+      reasoning: "Repeated tool calls detected.",
+      differential: [
+        { icd_ai_code: "TOOL.1.1", name: "Tool Failure", confidence: 0.3 },
+        { icd_ai_code: "COST.1.1", name: "Cost Explosion", confidence: 0.2 },
+      ],
+      treatmentSteps: [],
+      checks: [],
+      fixes: [],
+    });
+
     const { status, json } = await postDiagnose({
       evidence: [
         {
           type: "behavior",
-          description: "The agent is stuck in a loop, errors everywhere, tool failures",
-          symptoms: ["loop", "error", "tool fail"],
+          description: "The agent is stuck in a loop, errors everywhere",
         },
       ],
     });
 
     expect(status).toBe(200);
     expect(Array.isArray(json.differential)).toBe(true);
+    expect(json.differential).toHaveLength(2);
   });
 });

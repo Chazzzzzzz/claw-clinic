@@ -67,12 +67,23 @@ async function checkConnectivity(step: VerificationStep, config: Record<string, 
   }
 }
 
+function resolveDotPath(obj: Record<string, unknown>, path: string): unknown {
+  const parts = path.split(".");
+  let current: unknown = obj;
+  for (const part of parts) {
+    if (current === null || current === undefined || typeof current !== "object") return undefined;
+    current = (current as Record<string, unknown>)[part];
+  }
+  return current;
+}
+
 function checkConfig(step: VerificationStep, config: Record<string, unknown>): VerificationStepResult {
   if (!step.target) {
     return { step, passed: false, confidence: step.confidence, error: "No target config key specified" };
   }
 
-  const value = config[step.target];
+  // Try flat key first, then dot-path resolution
+  const value = config[step.target] ?? (step.target.includes(".") ? resolveDotPath(config, step.target) : undefined);
 
   if (step.expect === "present") {
     if (value !== undefined && value !== null && value !== "") {
