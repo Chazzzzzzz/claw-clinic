@@ -77,3 +77,25 @@ Available skills: `/office-hours`, `/plan-ceo-review`, `/plan-eng-review`, `/pla
 - Backend: deployed via git push (Cloud Run). Binary at `/usr/local/bin/openclaw` on server.
 - Plugin: deployed via SSH to `ubuntu@chaz-clawd`. Don't patch `@claw-clinic/shared` imports for remote deploy — openclaw handles workspace resolution natively.
 - After plugin deploy, restart gateway: `sudo systemctl restart openclaw-gateway`
+
+## Deploy Configuration (configured by /setup-deploy)
+- Platform: Cloud Run (backend) + SSH (plugin)
+- Production URL: configured per-environment via plugin config `backendUrl`
+- Deploy workflow: auto-deploy on merge to main (Cloud Run); manual SSH for plugin
+- Deploy status command: HTTP health check at backend `/health` endpoint
+- Merge method: squash
+- Project type: web API + OpenClaw plugin
+
+### Custom deploy hooks
+- Pre-merge: `pnpm build && pnpm test`
+- Deploy trigger (backend): automatic on push/merge to main (Cloud Run)
+- Deploy trigger (plugin):
+  ```bash
+  # Copy code to remote
+  rsync -avz --exclude node_modules --exclude dist --exclude .git . ubuntu@chaz-clawd:/home/ubuntu/.openclaw/extensions/claw-clinic/
+  # Install and build on remote
+  ssh ubuntu@chaz-clawd "cd /home/ubuntu/.openclaw/extensions/claw-clinic && pnpm install && pnpm build"
+  # Restart gateway
+  ssh ubuntu@chaz-clawd "sudo systemctl restart openclaw-gateway"
+  ```
+- Health check: `ssh ubuntu@chaz-clawd "systemctl is-active openclaw-gateway"`
