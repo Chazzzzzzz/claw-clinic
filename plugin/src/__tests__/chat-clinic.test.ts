@@ -157,13 +157,14 @@ describe("/clinic fresh diagnosis with checks and fixes", () => {
     diagnoseMock.mockRestore();
   });
 
-  it("saves fixes in session for later selection", async () => {
+  it("saves fixes in session and prompts user to pick /clinic 1-N", async () => {
     const { saveSession } = await import("../session-store.js");
     const diagnoseMock = vi.spyOn(ClawClinicClient.prototype, "diagnose");
 
     diagnoseMock.mockResolvedValueOnce(makeDiagnosisResponse({
       fixes: [
         { label: "Add key", command: "openclaw config set anthropic.apiKey KEY", description: "Add your key" },
+        { label: "Manual fix", description: "Do it yourself" },
       ],
     }));
 
@@ -171,12 +172,19 @@ describe("/clinic fresh diagnosis with checks and fixes", () => {
     const client = createMockClient();
     const handler = getClinicHandler(api, client);
 
-    await handler({ args: "" });
+    const result = await handler({ args: "" });
 
+    // Should show fix options with /clinic N format
+    expect(result.text).toContain("/clinic 1");
+    expect(result.text).toContain("/clinic 2");
+
+    // Session should save all fixes for selection
     expect(saveSession).toHaveBeenCalledWith(
       expect.objectContaining({
         pendingStepId: "fix_selection",
-        pendingFixes: [{ label: "Add key", command: "openclaw config set anthropic.apiKey KEY", description: "Add your key" }],
+        pendingFixes: expect.arrayContaining([
+          expect.objectContaining({ label: "Add key" }),
+        ]),
       }),
     );
 
@@ -261,8 +269,8 @@ describe("/clinic fresh diagnosis with checks and fixes", () => {
 });
 
 describe("/clinic follow-up with numeric fix selection", () => {
-  it("selects a fix by number and shows the command", async () => {
-    const { loadSession, saveSession } = await import("../session-store.js");
+  it("selects a fix by number and executes the command", async () => {
+    const { loadSession } = await import("../session-store.js");
 
     const pendingSession = {
       sessionId: "sess-1",
@@ -285,16 +293,9 @@ describe("/clinic follow-up with numeric fix selection", () => {
 
     const result = await handler({ args: "2" });
 
+    // Should execute the command and report result (pass or fail)
     expect(result.text).toContain("openclaw config set anthropic.apiKey KEY");
-    expect(result.text).toContain("/clinic run");
-    expect(result.text).toContain("/clinic done");
-
-    expect(saveSession).toHaveBeenCalledWith(
-      expect.objectContaining({
-        pendingStepId: "awaiting_run_confirmation",
-        pendingCommand: "openclaw config set anthropic.apiKey KEY",
-      }),
-    );
+    expect(result.text).toMatch(/Ran|Failed|Fixed/);
   });
 
   it("selects a fix without a command and shows description", async () => {
@@ -348,7 +349,8 @@ describe("/clinic follow-up with numeric fix selection", () => {
 
     const result = await handler({ args: "5" });
 
-    expect(result.text).toBe("Pick 1-2");
+    expect(result.text).toContain("/clinic 1");
+    expect(result.text).toContain("/clinic 2");
   });
 
   it("shows help text for unknown input when fixes are pending", async () => {

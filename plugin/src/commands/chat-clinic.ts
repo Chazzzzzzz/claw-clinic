@@ -161,7 +161,7 @@ async function runDiagnosis(
     // Step 4: Format compact result with checks/fixes
     const text = formatCompactResult(diagnosis.diagnosis, checkResults, diagnosis.fixes || []);
 
-    // Save session for fix selection (no backend call needed for this)
+    // Save session with all fixes for selection — user picks /clinic 1, /clinic 2, etc.
     if (diagnosis.fixes?.length) {
       await saveSession({
         sessionId: diagnosis.sessionId,
@@ -193,11 +193,12 @@ async function handleFollowUp(
 ): Promise<{ text: string }> {
   const trimmedInput = userInput.trim();
 
-  // Numeric fix selection (round 2 — no backend call)
+  // Numeric fix selection — user picks /clinic 1, /clinic 2, etc.
+  // This IS the user's confirmation — execute the command immediately.
   if (session.pendingFixes?.length && /^[1-9]$/.test(trimmedInput)) {
     const fixIndex = parseInt(trimmedInput, 10) - 1;
     if (fixIndex >= session.pendingFixes.length) {
-      return { text: `Pick 1-${session.pendingFixes.length}` };
+      return { text: `Pick \`/clinic 1\`-\`/clinic ${session.pendingFixes.length}\`` };
     }
     const fix = session.pendingFixes[fixIndex];
     return executeFix(api, client, session, fix);
@@ -239,46 +240,6 @@ async function handleFollowUp(
     }
   }
 
-  // /clinic run — execute the pending command after user confirmation
-  if (/^run$/i.test(trimmedInput) && session.pendingCommand) {
-    try {
-      await execAsync(session.pendingCommand, { timeout: 15_000 });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      await saveSession({
-        sessionId: session.sessionId,
-        pendingStepId: "awaiting_fix",
-        pendingPrompt: session.pendingCommand,
-        diagnosisCode: session.diagnosisCode,
-        diagnosisName: session.diagnosisName,
-        createdAt: new Date().toISOString(),
-      });
-      return {
-        text: `Failed to run \`${session.pendingCommand}\`: ${msg}\n\nRun it manually, then reply \`/clinic done\``,
-      };
-    }
-
-    // Verify after execution
-    const conn = await collectConnectivityEvidence(api.config);
-    const failed = conn.providers.filter((p) => !p.reachable || p.authStatus === "failed");
-    if (failed.length === 0) {
-      await clearSession();
-      return { text: `Ran \`${session.pendingCommand}\`\n\n**${session.diagnosisName}** — Fixed.` };
-    }
-
-    await saveSession({
-      sessionId: session.sessionId,
-      pendingStepId: "awaiting_fix",
-      pendingPrompt: session.pendingCommand,
-      diagnosisCode: session.diagnosisCode,
-      diagnosisName: session.diagnosisName,
-      createdAt: new Date().toISOString(),
-    });
-    return {
-      text: `Ran \`${session.pendingCommand}\` but issue persists.\n\n${failed.map((p) => `${p.name}: ${p.error || "failed"}`).join("; ")}\n\nTry another fix or reply \`/clinic done\` after manual resolution.`,
-    };
-  }
-
   // /clinic done — re-verify locally, no backend call (round 3)
   if (/^done$/i.test(trimmedInput)) {
     // Run checks locally using the diagnosis checks from session
@@ -292,9 +253,6 @@ async function handleFollowUp(
   }
 
   // Unknown input
-  if (session.pendingCommand) {
-    return { text: `Reply \`/clinic run\` to execute the command, or \`/clinic done\` if you ran it manually.` };
-  }
   if (session.pendingFixes?.length) {
     return { text: `Reply \`/clinic 1\`-\`/clinic ${session.pendingFixes.length}\` to pick a fix, or \`/clinic done\` if you fixed it manually.` };
   }
@@ -304,24 +262,49 @@ async function handleFollowUp(
 // ─── Execute a selected fix (round 2 — no backend call) ─────────
 
 async function executeFix(
-  _api: PluginApi,
+  api: PluginApi,
   _client: ClawClinicClient,
   session: StoredSession,
   fix: { label: string; command?: string; description: string },
 ): Promise<{ text: string }> {
   if (fix.command) {
-    // Show the command and ask for confirmation — never auto-execute LLM-generated commands
+    // User selected this fix — execute immediately
+    try {
+      await execAsync(fix.command, { timeout: 15_000 });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await saveSession({
+        sessionId: session.sessionId,
+        pendingStepId: "awaiting_fix",
+        pendingPrompt: fix.command,
+        diagnosisCode: session.diagnosisCode,
+        diagnosisName: session.diagnosisName,
+        createdAt: new Date().toISOString(),
+      });
+      return {
+        text: `Ran \`${fix.command}\` — failed: ${msg}\n\nRun it manually, then reply \`/clinic done\``,
+      };
+    }
+
+    // Verify after execution
+    const conn = await collectConnectivityEvidence(api.config);
+    const failed = conn.providers.filter((p) => !p.reachable || p.authStatus === "failed");
+    if (failed.length === 0) {
+      await clearSession();
+      return { text: `Ran \`${fix.command}\`\n\n**${session.diagnosisName}** — Fixed.` };
+    }
+
+    // Command ran but issue persists
     await saveSession({
       sessionId: session.sessionId,
-      pendingStepId: "awaiting_run_confirmation",
+      pendingStepId: "awaiting_fix",
       pendingPrompt: fix.command,
-      pendingCommand: fix.command,
       diagnosisCode: session.diagnosisCode,
       diagnosisName: session.diagnosisName,
       createdAt: new Date().toISOString(),
     });
     return {
-      text: `**${fix.label}**\n\n  \`${fix.command}\`\n\n${fix.description}\n\nReply \`/clinic run\` to execute, or \`/clinic done\` if you ran it manually.`,
+      text: `Ran \`${fix.command}\` but issue persists.\n\n${failed.map((p) => `${p.name}: ${p.error || "failed"}`).join("; ")}\n\nTry another fix or reply \`/clinic done\` after manual resolution.`,
     };
   }
 
