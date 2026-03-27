@@ -228,7 +228,8 @@ function renderCase(c) {
   }).join('');
 
   const allCmds = (c.treatment_steps || []).filter(s => s.command).map(s => s.command);
-  const copyAll = allCmds.length > 0 ? '<div class="copy-all-wrap"><button class="copy-all" data-cmd="' + esc(allCmds.join('\\n')) + '" onclick="copyCmdFromData(this)">Copy all commands</button></div>' : '';
+  var joinedCmds = allCmds.join(String.fromCharCode(10));
+  const copyAll = allCmds.length > 0 ? '<div class="copy-all-wrap"><button class="copy-all" data-cmd="' + esc(joinedCmds) + '" onclick="copyCmdFromData(this)">Copy all commands</button></div>' : '';
 
   const outcomeCls = c.outcome === 'cured' ? 'outcome-cured' : 'outcome-partial';
 
@@ -277,7 +278,7 @@ async function submitSimple(e) {
   const framework = f.get('framework')?.toString().trim() || undefined;
 
   // Extract commands from solution text (lines starting with common command patterns)
-  const lines = solution.split('\\n');
+  const lines = solution.split(String.fromCharCode(10));
   const steps = [];
   let currentDesc = [];
 
@@ -414,7 +415,7 @@ async function doSubmit(body, form) {
 // ── Utils ──
 
 function copyCmdFromData(btn) {
-  var cmd = (btn.getAttribute('data-cmd') || '').replace(/\\\\n/g, '\\n');
+  var cmd = btn.getAttribute('data-cmd') || '';
   navigator.clipboard.writeText(cmd).then(function() {
     var orig = btn.textContent;
     btn.textContent = 'Copied!';
