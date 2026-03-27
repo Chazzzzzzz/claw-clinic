@@ -1,10 +1,8 @@
 import { Hono } from "hono";
-import { html } from "hono/html";
 
 const forumRouter = new Hono();
 
-forumRouter.get("/forum", (c) => {
-  return c.html(html`<!DOCTYPE html>
+const FORUM_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -111,8 +109,8 @@ forumRouter.get("/forum", (c) => {
 </div>
 
 <div class="tabs">
-  <button class="tab active" onclick="showTab('browse')">Browse Cures</button>
-  <button class="tab" onclick="showTab('submit')">Share a Cure</button>
+  <button class="tab active" onclick="showTab('browse', this)">Browse Cures</button>
+  <button class="tab" onclick="showTab('submit', this)">Share a Cure</button>
 </div>
 
 <!-- Browse -->
@@ -127,8 +125,8 @@ forumRouter.get("/forum", (c) => {
 <!-- Submit -->
 <div id="submit-section" class="submit-section">
   <div class="mode-toggle">
-    <button class="mode-btn active" onclick="setMode('simple')">Simple</button>
-    <button class="mode-btn" onclick="setMode('advanced')">Advanced</button>
+    <button class="mode-btn active" onclick="setMode('simple', this)">Simple</button>
+    <button class="mode-btn" onclick="setMode('advanced', this)">Advanced</button>
   </div>
 
   <!-- Simple mode: describe in plain language -->
@@ -225,12 +223,12 @@ function renderCase(c) {
     if (s.description && s.label) content += '<div class="step-desc">' + esc(s.description) + '</div>';
     if (s.command) content += '<code>' + esc(s.command) + '</code>';
     content += '</div>';
-    const copyBtn = s.command ? '<button class="copy-btn" onclick="copyCmd(this,\'' + escAttr(s.command) + '\')">Copy</button>' : '';
+    const copyBtn = s.command ? '<button class="copy-btn" data-cmd="' + esc(s.command) + '" onclick="copyCmdFromData(this)">Copy</button>' : '';
     return '<li class="step"><span class="step-num">' + (i+1) + '</span>' + content + copyBtn + '</li>';
   }).join('');
 
-  const allCmds = (c.treatment_steps || []).filter(s => s.command).map(s => s.command).join('\\n');
-  const copyAll = allCmds ? '<div class="copy-all-wrap"><button class="copy-all" onclick="copyCmd(this,\'' + escAttr(allCmds) + '\')">Copy all commands</button></div>' : '';
+  const allCmds = (c.treatment_steps || []).filter(s => s.command).map(s => s.command);
+  const copyAll = allCmds.length > 0 ? '<div class="copy-all-wrap"><button class="copy-all" data-cmd="' + esc(allCmds.join('\n')) + '" onclick="copyCmdFromData(this)">Copy all commands</button></div>' : '';
 
   const outcomeCls = c.outcome === 'cured' ? 'outcome-cured' : 'outcome-partial';
 
@@ -255,16 +253,16 @@ function debounceSearch(val) {
 
 // ── Tabs & modes ──
 
-function showTab(tab) {
+function showTab(tab, btn) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  event.target.classList.add('active');
+  btn.classList.add('active');
   document.getElementById('browse-section').style.display = tab === 'browse' ? 'block' : 'none';
   document.getElementById('submit-section').className = tab === 'submit' ? 'submit-section active' : 'submit-section';
 }
 
-function setMode(mode) {
+function setMode(mode, btn) {
   document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
-  event.target.classList.add('active');
+  btn.classList.add('active');
   document.getElementById('simple-form').style.display = mode === 'simple' ? 'block' : 'none';
   document.getElementById('advanced-form').style.display = mode === 'advanced' ? 'block' : 'none';
 }
@@ -398,8 +396,8 @@ async function doSubmit(body, form) {
     if (res.ok) {
       toast('Cure shared! Thank you, doctor.');
       form.reset();
-      showTab('browse');
-      document.querySelector('.tab').click();
+      var browseBtn = document.querySelector('.tab');
+      showTab('browse', browseBtn);
       loadCases();
     } else {
       const err = await res.json();
@@ -415,13 +413,13 @@ async function doSubmit(body, form) {
 
 // ── Utils ──
 
-function copyCmd(btn, cmd) {
-  const text = cmd.replace(/\\\\n/g, '\\n');
-  navigator.clipboard.writeText(text).then(() => {
-    const orig = btn.textContent;
+function copyCmdFromData(btn) {
+  const cmd = btn.getAttribute('data-cmd') || '';
+  navigator.clipboard.writeText(cmd).then(function() {
+    var orig = btn.textContent;
     btn.textContent = 'Copied!';
     toast('Copied to clipboard — paste in your terminal', false, 'info');
-    setTimeout(() => btn.textContent = orig, 2000);
+    setTimeout(function() { btn.textContent = orig; }, 2000);
   });
 }
 
@@ -433,8 +431,7 @@ function toast(msg, isError, cls) {
   setTimeout(() => t.style.display = 'none', 3500);
 }
 
-function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
-function escAttr(s) { return (s || '').replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'").replace(/\\n/g, '\\\\n'); }
+function esc(s) { var d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
 
 function timeAgo(ts) {
   if (!ts) return '';
@@ -448,7 +445,10 @@ function timeAgo(ts) {
 loadCases();
 </script>
 </body>
-</html>`);
+</html>`;
+
+forumRouter.get("/forum", (c) => {
+  return c.html(FORUM_HTML);
 });
 
 export default forumRouter;
