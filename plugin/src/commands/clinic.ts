@@ -1,9 +1,58 @@
-import type { PluginApi } from "../types.js";
-import { ClawClinicClient } from "../client.js";
+import type { PluginApi, Evidence } from "../types.js";
+import { ClawClinicClient, type ConsultMessage } from "../client.js";
 import { collectAllEvidence } from "../evidence.js";
 import { validateLocally } from "../validation.js";
 import { ClinicNotifier } from "../notifier.js";
-import { runTreatmentLoop } from "../treatment-loop.js";
+import { exec } from "node:child_process";
+import { promisify } from "node:util";
+
+const execAsync = promisify(exec);
+
+const MAX_TURNS = 15;
+
+/** Sanitize command output */
+function sanitizeOutput(output: string): string {
+  let s = output.replace(
+    /\b(sk-[a-zA-Z0-9_-]{20,}|sk-ant-[a-zA-Z0-9_-]{20,}|AIza[a-zA-Z0-9_-]{30,})/g,
+    (m) => m.slice(0, 8) + "..." + m.slice(-4),
+  );
+  s = s.replace(/Bearer\s+[a-zA-Z0-9._-]{20,}/gi, "Bearer [MASKED]");
+  s = s.replace(/"(api[_-]?key|secret|token|password|auth)":\s*"[^"]{8,}"/gi, (_, key) => `"${key}": "[MASKED]"`);
+  return s;
+}
+
+/** Serialize evidence for the AI */
+function serializeEvidence(evidence: Evidence[]): string {
+  const parts: string[] = [];
+  for (const e of evidence) {
+    switch (e.type) {
+      case "config":
+        parts.push(`[Config] key=${e.apiKey?.masked || "none"} provider=${e.apiKey?.provider || "unknown"} endpoint=${e.endpoint?.url || "none"}${e.errorLogs?.length ? ` Errors: ${e.errorLogs.join("; ")}` : ""}`);
+        break;
+      case "connectivity":
+        for (const p of e.providers || []) {
+          parts.push(`[Conn] ${p.name}: reachable=${p.reachable} auth=${p.authStatus || "unknown"} latency=${p.latencyMs || "?"}ms${p.error ? ` err=${p.error}` : ""}`);
+        }
+        break;
+      case "runtime":
+        if (e.recentTraceStats) {
+          const s = e.recentTraceStats;
+          parts.push(`[Runtime] steps=${s.totalSteps} errors=${s.errorCount} tools=${s.toolCallCount}/${s.toolSuccessCount} loop=${s.loopDetected} cost=$${s.totalCostUsd} latency=${s.avgLatencyMs}ms`);
+        }
+        break;
+      case "behavior":
+        parts.push(`[Behavior] ${e.description}${e.symptoms?.length ? ` Symptoms: ${e.symptoms.join(", ")}` : ""}`);
+        break;
+      case "log":
+        if (e.errorPatterns?.length) parts.push(`[Logs] ${e.errorPatterns.join("; ")}`);
+        break;
+      case "environment":
+        parts.push(`[Env] OS=${e.os || "?"} Node=${e.nodeVersion || "?"} OpenClaw=${e.openclawVersion || "?"}`);
+        break;
+    }
+  }
+  return parts.join("\n");
+}
 
 export function registerClinicCommand(api: PluginApi, client: ClawClinicClient): void {
   api.registerCli(
@@ -14,7 +63,7 @@ export function registerClinicCommand(api: PluginApi, client: ClawClinicClient):
 
       cmd
         .command("diagnose")
-        .description("Run full diagnostic workflow: validate, collect evidence, diagnose, and auto-treat")
+        .description("Run agentic diagnostic: AI doctor examines your agent step by step")
         .argument("[symptoms...]", "Description of the issue you're experiencing")
         .action(async (...args: unknown[]) => {
           const symptomsArr = Array.isArray(args[0]) ? args[0] as string[] : [];
@@ -22,19 +71,9 @@ export function registerClinicCommand(api: PluginApi, client: ClawClinicClient):
           const notifier = new ClinicNotifier(api, { mode: "cli" });
 
           try {
-            // Step 1: Local validation
-            await notifier.status("Running local validation...");
-            const localResult = await validateLocally(api.config);
-            if (localResult.quickIssues.length > 0) {
-              for (const issue of localResult.quickIssues) {
-                await notifier.status(`  Issue: ${issue}`);
-              }
-            } else {
-              await notifier.status("Local validation passed.");
-            }
-
-            // Step 2: Collect evidence
+            // Step 1: Collect evidence
             await notifier.status("Collecting evidence...");
+            const localResult = await validateLocally(api.config);
             const evidence = await collectAllEvidence(api.config);
 
             if (symptoms) {
@@ -46,94 +85,109 @@ export function registerClinicCommand(api: PluginApi, client: ClawClinicClient):
 
             await notifier.status(`Collected: ${evidence.map((e) => e.type).join(", ")}`);
 
-            // Step 3: Backend diagnosis
-            await notifier.status("Sending to backend for diagnosis...");
-            const diagnosis = await client.diagnose(evidence, symptoms);
+            // Step 2: Start consultation
+            const evidenceText = serializeEvidence(evidence);
+            const userMessage = symptoms
+              ? `Patient complaint: ${symptoms}\n\nEvidence:\n${evidenceText}`
+              : `Routine checkup.\n\nEvidence:\n${evidenceText}`;
 
-            if (diagnosis.diagnosis) {
-              const d = diagnosis.diagnosis;
-              console.log(`\nDiagnosis: ${d.name} (${d.icd_ai_code})`);
-              console.log(`Severity: ${d.severity} | Confidence: ${(d.confidence * 100).toFixed(0)}%`);
-              console.log(`\n${d.reasoning}`);
-            } else {
-              console.log("\nNo issues detected. Your agent appears healthy.");
-              return;
-            }
+            const conversation: ConsultMessage[] = [{ role: "user", content: userMessage }];
 
-            // Step 4: Auto-execute treatment
-            if (diagnosis.treatmentPlan.length > 0) {
-              console.log(`\nStarting treatment (${diagnosis.treatmentPlan.length} steps)...\n`);
+            await notifier.status("Starting AI consultation...\n");
 
-              const loopResult = await runTreatmentLoop({
-                client,
-                sessionId: diagnosis.sessionId,
-                treatmentPlan: diagnosis.treatmentPlan,
-                notifier,
-                config: api.config,
-              });
+            // Step 3: Agentic loop
+            for (let turn = 0; turn < MAX_TURNS; turn++) {
+              const response = await client.consult(conversation);
+              conversation.push({ role: "assistant", content: response.assistantContent });
 
-              console.log(`\nResult: ${loopResult.status} (${loopResult.stepsCompleted}/${loopResult.stepsTotal} steps)`);
-              console.log(loopResult.message);
+              // Show AI text
+              if (response.text) {
+                console.log(response.text);
+              }
 
-              if (loopResult.status === "paused_for_input" && loopResult.pendingStep) {
-                console.log(`\nStep "${loopResult.pendingStep.id}" needs your input: ${loopResult.pendingStep.inputPrompt || loopResult.pendingStep.description}`);
-                console.log(`Run: openclaw claw-clinic treat ${diagnosis.sessionId} ${loopResult.pendingStep.id} --input "<your input>"`);
+              // Done
+              if (response.done) {
+                console.log("\nConsultation complete.");
+                return;
+              }
+
+              // Handle tool calls
+              for (const tool of response.toolCalls) {
+                if (tool.name === "mark_resolved") {
+                  console.log(`\n✓ ${tool.input.name} (${tool.input.icd_ai_code}) — Resolved`);
+                  console.log(tool.input.summary);
+                  return;
+                }
+
+                if (tool.name === "run_command") {
+                  // Auto-execute diagnostic command
+                  console.log(`\n> ${tool.input.reason}`);
+                  console.log(`> $ ${tool.input.command}`);
+
+                  let output: string;
+                  let isError = false;
+                  try {
+                    const result = await execAsync(tool.input.command, { timeout: 15_000 });
+                    output = (result.stdout || "") + (result.stderr ? `\n${result.stderr}` : "");
+                    if (!output.trim()) output = "(no output)";
+                  } catch (err) {
+                    isError = true;
+                    const errObj = err as Record<string, unknown>;
+                    output = errObj?.stderr ? `Error: ${String(errObj.stderr)}` : `Error: ${err instanceof Error ? err.message : String(err)}`;
+                  }
+
+                  output = sanitizeOutput(output);
+                  if (output.length > 3000) output = output.slice(0, 3000) + "\n...(truncated)";
+
+                  // Show truncated result to user
+                  const preview = output.split("\n").slice(0, 5).join("\n");
+                  console.log(preview);
+                  if (output.split("\n").length > 5) console.log("  ...");
+
+                  // Send back to AI
+                  conversation.push({
+                    role: "user",
+                    content: [{ type: "tool_result", tool_use_id: tool.id, content: output, is_error: isError }],
+                  });
+                }
+
+                if (tool.name === "propose_fix") {
+                  console.log(`\n⚡ Proposed fix (risk: ${tool.input.risk || "low"}):`);
+                  console.log(`  $ ${tool.input.command}`);
+                  console.log(`  ${tool.input.description}`);
+
+                  // In CLI mode, auto-execute fixes (non-interactive)
+                  // For interactive approval, the /clinic chat command handles that
+                  console.log(`\n  Applying fix...`);
+
+                  let output: string;
+                  let isError = false;
+                  try {
+                    const result = await execAsync(tool.input.command, { timeout: 30_000 });
+                    output = (result.stdout || "") + (result.stderr ? `\n${result.stderr}` : "");
+                    if (!output.trim()) output = "(done)";
+                    console.log(`  ✓ ${output.trim().split("\n")[0]}`);
+                  } catch (err) {
+                    isError = true;
+                    const errObj = err as Record<string, unknown>;
+                    output = errObj?.stderr ? `Error: ${String(errObj.stderr)}` : `Error: ${err instanceof Error ? err.message : String(err)}`;
+                    console.log(`  ✗ ${output.split("\n")[0]}`);
+                  }
+
+                  output = sanitizeOutput(output);
+
+                  conversation.push({
+                    role: "user",
+                    content: [{ type: "tool_result", tool_use_id: tool.id, content: output, is_error: isError }],
+                  });
+                }
               }
             }
+
+            console.log("\nMax turns reached.");
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             console.error(`Clinic error: ${message}`);
-          }
-        });
-
-      cmd
-        .command("treat")
-        .description("Provide input for a paused treatment step and auto-continue")
-        .argument("<sessionId>", "Session ID from the diagnosis")
-        .argument("<stepId>", "Step ID to execute")
-        .option("--input <value>", "User-provided input for the step")
-        .action(async (...args: unknown[]) => {
-          const sessionId = args[0] as string;
-          const stepId = args[1] as string;
-          const opts = (args[2] || {}) as Record<string, unknown>;
-          const notifier = new ClinicNotifier(api, { mode: "cli" });
-
-          try {
-            await notifier.status(`Executing step ${stepId}...`);
-
-            const response = await client.treat(sessionId, stepId, {
-              success: true,
-              data: opts.input ? { userInput: opts.input } : undefined,
-            });
-
-            console.log(`Status: ${response.status.toUpperCase()}`);
-            console.log(response.message);
-
-            // Auto-continue remaining steps
-            if (response.status === "next" && response.nextStep) {
-              await notifier.status("Continuing with remaining steps...");
-
-              const loopResult = await runTreatmentLoop({
-                client,
-                sessionId,
-                treatmentPlan: [response.nextStep],
-                notifier,
-                config: api.config,
-              });
-
-              console.log(`\nResult: ${loopResult.status}`);
-              console.log(loopResult.message);
-
-              if (loopResult.status === "paused_for_input" && loopResult.pendingStep) {
-                console.log(`\nNext step needs input: ${loopResult.pendingStep.inputPrompt || loopResult.pendingStep.description}`);
-                console.log(`Run: openclaw claw-clinic treat ${sessionId} ${loopResult.pendingStep.id} --input "<your input>"`);
-              }
-            } else if (response.status === "resolved") {
-              console.log("\nIssue resolved. Your agent should now function normally.");
-            }
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            console.error(`Treatment error: ${message}`);
           }
         });
 

@@ -4,6 +4,8 @@ import diagnoseRouter from "./routes/diagnose.js";
 import treatRouter from "./routes/treat.js";
 import verifyRouter from "./routes/verify.js";
 import consultRouter from "./routes/consult.js";
+import casesRouter from "./routes/cases.js";
+import forumRouter from "./routes/forum.js";
 
 const app = new Hono();
 
@@ -15,6 +17,8 @@ app.get("/health", (c) => {
 
 app.route("/", diagnoseRouter);
 app.route("/", consultRouter);
+app.route("/", casesRouter);
+app.route("/", forumRouter);
 
 app.route("/treat", treatRouter);
 
