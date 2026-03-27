@@ -16,7 +16,6 @@ describe("ClawClinicClient", () => {
   describe("constructor", () => {
     it("strips trailing slashes from baseUrl", () => {
       const client = new ClawClinicClient("http://localhost:3000///");
-      // Verify by making a health check and inspecting the URL passed to fetch
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ status: "ok", version: "0.1.0" }),
@@ -54,23 +53,15 @@ describe("ClawClinicClient", () => {
     });
   });
 
-  describe("diagnose()", () => {
-    it("sends evidence and symptoms, returns parsed response", async () => {
+  describe("consult()", () => {
+    it("sends messages and returns parsed response", async () => {
       const client = new ClawClinicClient("http://localhost:3000");
-      const evidence = [{ type: "config" as const }];
-      const symptoms = "API key not working";
+      const messages = [{ role: "user" as const, content: "test" }];
       const mockResponse = {
-        sessionId: "sess-1",
-        diagnosis: {
-          icd_ai_code: "AUTH-001",
-          name: "Invalid API Key",
-          confidence: 0.9,
-          severity: "high",
-          reasoning: "Key format mismatch",
-        },
-        differential: [],
-        treatmentPlan: [],
-        summary: "Invalid key detected",
+        text: "Let me check...",
+        toolCalls: [{ id: "t1", name: "run_command", input: { command: "ls", reason: "checking" } }],
+        done: false,
+        assistantContent: [{ type: "text", text: "Let me check..." }],
       };
 
       mockFetch.mockResolvedValueOnce({
@@ -78,52 +69,27 @@ describe("ClawClinicClient", () => {
         json: () => Promise.resolve(mockResponse),
       });
 
-      const result = await client.diagnose(evidence, symptoms);
+      const result = await client.consult(messages);
 
-      expect(mockFetch).toHaveBeenCalledWith("http://localhost:3000/diagnose", {
+      expect(mockFetch).toHaveBeenCalledWith("http://localhost:3000/consult", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ evidence, symptoms }),
+        body: JSON.stringify({ messages }),
       });
       expect(result).toEqual(mockResponse);
     });
-  });
 
-  describe("treat()", () => {
-    it("sends step result and returns parsed response", async () => {
+    it("throws on non-ok response", async () => {
       const client = new ClawClinicClient("http://localhost:3000");
-      const mockResponse = {
-        status: "next" as const,
-        nextStep: {
-          id: "step-2",
-          action: "test_connection" as const,
-          description: "Test the connection",
-          requiresUserInput: false,
-        },
-        message: "Proceeding to next step",
-        sessionId: "sess-1",
-      };
-
       mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: () => Promise.resolve(mockResponse),
+        ok: false,
+        status: 500,
+        text: () => Promise.resolve("Internal error"),
       });
 
-      const result = await client.treat("sess-1", "step-1", {
-        success: true,
-        data: { key: "value" },
-      });
-
-      expect(mockFetch).toHaveBeenCalledWith("http://localhost:3000/treat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionId: "sess-1",
-          stepId: "step-1",
-          stepResult: { success: true, data: { key: "value" } },
-        }),
-      });
-      expect(result).toEqual(mockResponse);
+      await expect(client.consult([{ role: "user", content: "test" }])).rejects.toThrow(
+        "Consultation failed: 500",
+      );
     });
   });
 });

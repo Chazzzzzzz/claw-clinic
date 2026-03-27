@@ -7,14 +7,6 @@
     ".": {
       "import": "./dist/index.js",
       "types": "./src/index.ts"
-    },
-    "./doctor-agent": {
-      "import": "./dist/doctor-agent.js",
-      "types": "./src/doctor-agent.ts"
-    },
-    "./follow-up": {
-      "import": "./dist/follow-up.js",
-      "types": "./src/follow-up.ts"
     }
   },
   "scripts": {
