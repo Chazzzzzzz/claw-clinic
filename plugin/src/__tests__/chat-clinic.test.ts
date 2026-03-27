@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { registerClinicChatCommand } from "../commands/chat-clinic.js";
 import { ClawClinicClient } from "../client.js";
-import type { PluginApi, CommandContext, DiagnosisResponse } from "../types.js";
+import type { PluginApi, CommandContext } from "../types.js";
 
 // ─── Mocks ───────────────────────────────────────────────────────
 
@@ -76,25 +76,6 @@ function getClinicHandler(api: PluginApi, client: ClawClinicClient) {
   return registerCall[0].handler as (ctx: CommandContext) => Promise<{ text: string }>;
 }
 
-function makeDiagnosisResponse(overrides: Partial<DiagnosisResponse> = {}): DiagnosisResponse {
-  return {
-    sessionId: "sess-test-1",
-    diagnosis: {
-      icd_ai_code: "CFG.1.2",
-      name: "API Key Missing",
-      confidence: 0.95,
-      severity: "Critical",
-      reasoning: "No API key found in config.",
-    },
-    differential: [],
-    treatmentPlan: [],
-    checks: [],
-    fixes: [],
-    summary: "Missing API key",
-    ...overrides,
-  };
-}
-
 // ─── Tests ───────────────────────────────────────────────────────
 
 const mockFetch = vi.fn();
@@ -105,37 +86,16 @@ beforeEach(() => {
   mockFetch.mockResolvedValue({ ok: true, status: 200 });
 });
 
-describe("/clinic fresh diagnosis with checks and fixes", () => {
-  it("shows compact output with checks and fixes when backend returns them", async () => {
-    const diagnoseMock = vi.spyOn(ClawClinicClient.prototype, "diagnose");
-
-    diagnoseMock.mockResolvedValueOnce(makeDiagnosisResponse({
-      diagnosis: {
-        icd_ai_code: "CFG.3.1",
-        name: "Auth Failure",
-        confidence: 0.9,
-        severity: "Critical",
-        reasoning: "API key rejected by provider.",
-      },
-      checks: [
-        { type: "check_connectivity", target: "anthropic", expect: "reachable", label: "Anthropic API reachable" },
-      ],
-      fixes: [
-        { label: "Paste new key", description: "Paste your API key here" },
-        { label: "Run config command", command: "openclaw config set anthropic.apiKey YOUR_KEY", description: "Set key via CLI" },
-      ],
-    }));
-
-    // Mock executeVerificationPlan for the checks — issue still active
-    const { executeVerificationPlan } = await import("../verification-executor.js");
-    (executeVerificationPlan as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      passed: false,
-      results: [
-        {
-          step: { type: "check_connectivity", description: "Anthropic API reachable", target: "anthropic", expect: "reachable" },
-          passed: false,
-          error: "auth failed (HTTP 401)",
-        },
+describe("/clinic agentic consultation flow", () => {
+  it("starts consultation and shows AI text when AI responds with text only", async () => {
+    const consultMock = vi.spyOn(ClawClinicClient.prototype, "consult");
+    consultMock.mockResolvedValueOnce({
+      text: "Let me check your config.",
+      toolCalls: [{ id: "tool-1", name: "run_command", input: { command: "cat ~/.openclaw/openclaw.json", reason: "Checking your config" } }],
+      done: false,
+      assistantContent: [
+        { type: "text", text: "Let me check your config." },
+        { type: "tool_use", id: "tool-1", name: "run_command", input: { command: "cat ~/.openclaw/openclaw.json", reason: "Checking your config" } },
       ],
     });
 
@@ -143,117 +103,98 @@ describe("/clinic fresh diagnosis with checks and fixes", () => {
     const client = createMockClient();
     const handler = getClinicHandler(api, client);
 
-    const result = await handler({ args: "" });
+    const result = await handler({ args: "agent not working" });
 
-    expect(result.text).toContain("**Auth Failure**");
-    expect(result.text).toContain("Checked:");
-    expect(result.text).toContain("\u2717 Anthropic API reachable");
-    expect(result.text).toContain("To fix");
-    expect(result.text).toContain("1. Paste new key");
-    expect(result.text).toContain("2. Run config command");
-    expect(result.text).toContain("/clinic 1");
-    expect(result.text).toContain("to apply");
-
-    diagnoseMock.mockRestore();
+    expect(result.text).toContain("Checking your config");
+    expect(result.text).toContain("cat ~/.openclaw/openclaw.json");
+    expect(result.text).toContain("/clinic yes");
+    consultMock.mockRestore();
   });
 
-  it("saves fixes in session and prompts user to pick /clinic 1-N", async () => {
-    const { saveSession } = await import("../session-store.js");
-    const diagnoseMock = vi.spyOn(ClawClinicClient.prototype, "diagnose");
-
-    diagnoseMock.mockResolvedValueOnce(makeDiagnosisResponse({
-      fixes: [
-        { label: "Add key", command: "openclaw config set anthropic.apiKey KEY", description: "Add your key" },
-        { label: "Manual fix", description: "Do it yourself" },
+  it("shows mark_resolved summary when AI resolves the issue", async () => {
+    const consultMock = vi.spyOn(ClawClinicClient.prototype, "consult");
+    consultMock.mockResolvedValueOnce({
+      text: "",
+      toolCalls: [{ id: "tool-1", name: "mark_resolved", input: { icd_ai_code: "CFG.1.1", name: "Missing API Key", summary: "Added the API key to config" } }],
+      done: false,
+      assistantContent: [
+        { type: "tool_use", id: "tool-1", name: "mark_resolved", input: { icd_ai_code: "CFG.1.1", name: "Missing API Key", summary: "Added the API key to config" } },
       ],
-    }));
+    });
 
     const api = createMockApi();
     const client = createMockClient();
     const handler = getClinicHandler(api, client);
 
-    const result = await handler({ args: "" });
+    const result = await handler({ args: "can't connect" });
 
-    // Should show fix options with /clinic N format
-    expect(result.text).toContain("/clinic 1");
-    expect(result.text).toContain("/clinic 2");
+    expect(result.text).toContain("Missing API Key");
+    expect(result.text).toContain("CFG.1.1");
+    expect(result.text).toContain("Resolved");
+    consultMock.mockRestore();
+  });
 
-    // Session should save all fixes for selection
+  it("shows propose_fix with approval prompt", async () => {
+    const consultMock = vi.spyOn(ClawClinicClient.prototype, "consult");
+    consultMock.mockResolvedValueOnce({
+      text: "I found the issue.",
+      toolCalls: [{ id: "tool-2", name: "propose_fix", input: { command: "openclaw config set model claude-sonnet-4-20250514", description: "Switch to a model that supports tool use", risk: "low" } }],
+      done: false,
+      assistantContent: [
+        { type: "text", text: "I found the issue." },
+        { type: "tool_use", id: "tool-2", name: "propose_fix", input: { command: "openclaw config set model claude-sonnet-4-20250514", description: "Switch to a model that supports tool use", risk: "low" } },
+      ],
+    });
+
+    const api = createMockApi();
+    const client = createMockClient();
+    const handler = getClinicHandler(api, client);
+
+    const result = await handler({ args: "tools not working" });
+
+    expect(result.text).toContain("Proposed fix");
+    expect(result.text).toContain("openclaw config set model");
+    expect(result.text).toContain("/clinic yes");
+    consultMock.mockRestore();
+  });
+
+  it("saves session with conversation history for multi-turn", async () => {
+    const { saveSession } = await import("../session-store.js");
+    const consultMock = vi.spyOn(ClawClinicClient.prototype, "consult");
+    consultMock.mockResolvedValueOnce({
+      text: "Checking...",
+      toolCalls: [{ id: "tool-1", name: "run_command", input: { command: "ls", reason: "test" } }],
+      done: false,
+      assistantContent: [{ type: "text", text: "Checking..." }, { type: "tool_use", id: "tool-1", name: "run_command", input: { command: "ls", reason: "test" } }],
+    });
+
+    const api = createMockApi();
+    const client = createMockClient();
+    const handler = getClinicHandler(api, client);
+
+    await handler({ args: "test" });
+
     expect(saveSession).toHaveBeenCalledWith(
       expect.objectContaining({
-        pendingStepId: "fix_selection",
-        pendingFixes: expect.arrayContaining([
-          expect.objectContaining({ label: "Add key" }),
+        pendingStepId: "awaiting_approval",
+        pendingCommand: "ls",
+        pendingToolId: "tool-1",
+        conversation: expect.arrayContaining([
+          expect.objectContaining({ role: "user" }),
+          expect.objectContaining({ role: "assistant" }),
         ]),
       }),
     );
-
-    diagnoseMock.mockRestore();
+    consultMock.mockRestore();
   });
 
-  it("returns healthy when no diagnosis", async () => {
-    const diagnoseMock = vi.spyOn(ClawClinicClient.prototype, "diagnose");
-
-    diagnoseMock.mockResolvedValueOnce(makeDiagnosisResponse({
-      diagnosis: null,
-      treatmentPlan: [],
-      checks: [],
-      fixes: [],
-      summary: "No diagnosis",
-    }));
-
-    const api = createMockApi();
-    const client = createMockClient();
-    const handler = getClinicHandler(api, client);
-
-    const result = await handler({ args: "" });
-
-    expect(result.text).toMatch(/healthy|no issues/i);
-
-    diagnoseMock.mockRestore();
-  });
-
-  it("shows diagnosis name and reasoning when no checks/fixes", async () => {
-    const diagnoseMock = vi.spyOn(ClawClinicClient.prototype, "diagnose");
-
-    diagnoseMock.mockResolvedValueOnce(makeDiagnosisResponse({
-      diagnosis: {
-        icd_ai_code: "E.1.1",
-        name: "Infinite Loop",
-        confidence: 0.85,
-        severity: "High",
-        reasoning: "Agent stuck in a loop.",
-      },
-      checks: [],
-      fixes: [],
-      treatmentPlan: [],
-    }));
-
-    const api = createMockApi();
-    const client = createMockClient();
-    const handler = getClinicHandler(api, client);
-
-    const result = await handler({ args: "" });
-
-    expect(result.text).toContain("**Infinite Loop**");
-    expect(result.text).toContain("Agent stuck in a loop.");
-
-    diagnoseMock.mockRestore();
-  });
-
-  it("returns resolved when all checks pass and no symptoms reported", async () => {
-    const diagnoseMock = vi.spyOn(ClawClinicClient.prototype, "diagnose");
-    const { executeVerificationPlan } = await import("../verification-executor.js");
-
-    diagnoseMock.mockResolvedValueOnce(makeDiagnosisResponse({
-      checks: [
-        { type: "check_config", target: "apiKey", expect: "present", label: "API key present" },
-      ],
-    }));
-
-    (executeVerificationPlan as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      passed: true,
-      results: [{ step: { type: "check_config", description: "API key present" }, passed: true }],
+  it("shows done message when AI finishes with text only", async () => {
+    const consultMock = vi.spyOn(ClawClinicClient.prototype, "consult");
+    consultMock.mockResolvedValueOnce({
+      text: "Your agent looks healthy. No issues found.",
+      toolCalls: [],
+      done: true,
+      assistantContent: [{ type: "text", text: "Your agent looks healthy. No issues found." }],
     });
 
     const api = createMockApi();
@@ -262,146 +203,18 @@ describe("/clinic fresh diagnosis with checks and fixes", () => {
 
     const result = await handler({ args: "" });
 
-    expect(result.text).toMatch(/resolved|no action/i);
-
-    diagnoseMock.mockRestore();
-  });
-});
-
-describe("/clinic follow-up with numeric fix selection", () => {
-  it("selects a fix by number and executes the command", async () => {
-    const { loadSession } = await import("../session-store.js");
-
-    const pendingSession = {
-      sessionId: "sess-1",
-      pendingStepId: "fix_selection",
-      pendingPrompt: "Reply 1-2",
-      diagnosisCode: "CFG.3.1",
-      diagnosisName: "Auth Failure",
-      createdAt: new Date().toISOString(),
-      pendingFixes: [
-        { label: "Paste new key", description: "Paste your API key" },
-        { label: "Run config command", command: "openclaw config set anthropic.apiKey KEY", description: "Set via CLI" },
-      ],
-    };
-
-    (loadSession as ReturnType<typeof vi.fn>).mockResolvedValueOnce(pendingSession);
-
-    const api = createMockApi();
-    const client = createMockClient();
-    const handler = getClinicHandler(api, client);
-
-    const result = await handler({ args: "2" });
-
-    // Should execute the command and report result (pass or fail)
-    expect(result.text).toContain("openclaw config set anthropic.apiKey KEY");
-    expect(result.text).toMatch(/Ran|Failed|Fixed/);
+    expect(result.text).toContain("healthy");
+    consultMock.mockRestore();
   });
 
-  it("selects a fix without a command and shows description", async () => {
-    const { loadSession } = await import("../session-store.js");
-
-    const pendingSession = {
-      sessionId: "sess-1",
-      pendingStepId: "fix_selection",
-      pendingPrompt: "Reply 1",
-      diagnosisCode: "CFG.3.1",
-      diagnosisName: "Auth Failure",
-      createdAt: new Date().toISOString(),
-      pendingFixes: [
-        { label: "Paste new key", description: "Go to console.anthropic.com and create a new key, then paste it here." },
-      ],
-    };
-
-    (loadSession as ReturnType<typeof vi.fn>).mockResolvedValueOnce(pendingSession);
-
-    const api = createMockApi();
-    const client = createMockClient();
-    const handler = getClinicHandler(api, client);
-
-    const result = await handler({ args: "1" });
-
-    expect(result.text).toContain("Go to console.anthropic.com");
-    expect(result.text).toContain("/clinic done");
-  });
-
-  it("rejects out-of-range fix number", async () => {
-    const { loadSession } = await import("../session-store.js");
-
-    const pendingSession = {
-      sessionId: "sess-1",
-      pendingStepId: "fix_selection",
-      pendingPrompt: "Reply 1-2",
-      diagnosisCode: "CFG.3.1",
-      diagnosisName: "Auth Failure",
-      createdAt: new Date().toISOString(),
-      pendingFixes: [
-        { label: "Fix A", description: "desc A" },
-        { label: "Fix B", description: "desc B" },
-      ],
-    };
-
-    (loadSession as ReturnType<typeof vi.fn>).mockResolvedValueOnce(pendingSession);
-
-    const api = createMockApi();
-    const client = createMockClient();
-    const handler = getClinicHandler(api, client);
-
-    const result = await handler({ args: "5" });
-
-    expect(result.text).toContain("/clinic 1");
-    expect(result.text).toContain("/clinic 2");
-  });
-
-  it("shows help text for unknown input when fixes are pending", async () => {
-    const { loadSession } = await import("../session-store.js");
-
-    const pendingSession = {
-      sessionId: "sess-1",
-      pendingStepId: "fix_selection",
-      pendingPrompt: "Reply 1-2",
-      diagnosisCode: "CFG.3.1",
-      diagnosisName: "Auth Failure",
-      createdAt: new Date().toISOString(),
-      pendingFixes: [
-        { label: "Fix A", description: "desc A" },
-        { label: "Fix B", description: "desc B" },
-      ],
-    };
-
-    (loadSession as ReturnType<typeof vi.fn>).mockResolvedValueOnce(pendingSession);
-
-    const api = createMockApi();
-    const client = createMockClient();
-    const handler = getClinicHandler(api, client);
-
-    const result = await handler({ args: "what do I do" });
-
-    expect(result.text).toContain("/clinic 1");
-    expect(result.text).toContain("to pick a fix");
-    expect(result.text).toContain("/clinic done");
-  });
-});
-
-describe("/clinic done re-verification", () => {
-  it("clears session when connectivity check passes on /clinic done", async () => {
+  it("handles /clinic done with pending session", async () => {
     const { loadSession, clearSession } = await import("../session-store.js");
-    const { collectConnectivityEvidence } = await import("../evidence.js");
-
-    const pendingSession = {
-      sessionId: "sess-1",
-      pendingStepId: "awaiting_fix",
-      pendingPrompt: "openclaw config set ...",
-      diagnosisCode: "CFG.3.1",
-      diagnosisName: "Auth Failure",
+    (loadSession as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      sessionId: "s1",
+      pendingStepId: "awaiting_approval",
+      diagnosisCode: "CFG.1.1",
+      diagnosisName: "Test Issue",
       createdAt: new Date().toISOString(),
-    };
-
-    (loadSession as ReturnType<typeof vi.fn>).mockResolvedValueOnce(pendingSession);
-    (collectConnectivityEvidence as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      providers: [
-        { name: "anthropic", endpoint: "https://api.anthropic.com", reachable: true, authStatus: "ok" },
-      ],
     });
 
     const api = createMockApi();
@@ -410,73 +223,35 @@ describe("/clinic done re-verification", () => {
 
     const result = await handler({ args: "done" });
 
-    expect(result.text).toContain("Auth Failure");
     expect(result.text).toContain("Fixed");
     expect(clearSession).toHaveBeenCalled();
   });
 
-  it("shows still-detected when connectivity fails on /clinic done", async () => {
-    const { loadSession } = await import("../session-store.js");
-    const { collectConnectivityEvidence } = await import("../evidence.js");
-
-    const pendingSession = {
-      sessionId: "sess-1",
-      pendingStepId: "awaiting_fix",
-      pendingPrompt: "openclaw config set ...",
-      diagnosisCode: "CFG.3.1",
-      diagnosisName: "Auth Failure",
-      createdAt: new Date().toISOString(),
-    };
-
-    (loadSession as ReturnType<typeof vi.fn>).mockResolvedValueOnce(pendingSession);
-    (collectConnectivityEvidence as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      providers: [
-        { name: "anthropic", endpoint: "https://api.anthropic.com", reachable: true, authStatus: "failed", authStatusCode: 401 },
-      ],
-    });
+  it("handles /clinic reset", async () => {
+    const { clearSession } = await import("../session-store.js");
 
     const api = createMockApi();
     const client = createMockClient();
     const handler = getClinicHandler(api, client);
 
-    const result = await handler({ args: "done" });
+    const result = await handler({ args: "reset" });
 
-    expect(result.text).toContain("Auth Failure");
-    expect(result.text).toContain("still detected");
-  });
-});
-
-describe("/clinic follow-up with pasted API key", () => {
-  it("accepts a valid pasted API key and verifies it locally", async () => {
-    const { loadSession, clearSession } = await import("../session-store.js");
-    const { detectProvider, validateKeyFormat, writeApiKeyToAuthProfiles, collectConnectivityEvidence } = await import("../evidence.js");
-
-    const pendingSession = {
-      sessionId: "sess-1",
-      pendingStepId: "step_1",
-      pendingPrompt: "Paste your key",
-      diagnosisCode: "CFG.3.1",
-      diagnosisName: "Auth Failure",
-      createdAt: new Date().toISOString(),
-    };
-
-    (loadSession as ReturnType<typeof vi.fn>).mockResolvedValueOnce(pendingSession);
-    (detectProvider as ReturnType<typeof vi.fn>).mockReturnValueOnce("anthropic");
-    (validateKeyFormat as ReturnType<typeof vi.fn>).mockReturnValueOnce({ valid: true });
-    (writeApiKeyToAuthProfiles as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ success: true });
-    // Local connectivity check passes
-    (collectConnectivityEvidence as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      providers: [{ name: "anthropic", endpoint: "https://api.anthropic.com", reachable: true, authStatus: "ok" }],
-    });
-
-    const api = createMockApi();
-    const client = createMockClient();
-    const handler = getClinicHandler(api, client);
-
-    const result = await handler({ args: "sk-ant-api01-testkey" });
-
-    expect(result.text).toContain("working");
-    expect(result.text).toContain("fixed");
+    expect(result.text).toContain("cleared");
     expect(clearSession).toHaveBeenCalled();
+  });
+
+  it("handles consultation error gracefully", async () => {
+    const consultMock = vi.spyOn(ClawClinicClient.prototype, "consult");
+    consultMock.mockRejectedValueOnce(new Error("Network error"));
+
+    const api = createMockApi();
+    const client = createMockClient();
+    const handler = getClinicHandler(api, client);
+
+    const result = await handler({ args: "test" });
+
+    expect(result.text).toContain("error");
+    expect(result.text).toContain("Network error");
+    consultMock.mockRestore();
   });
 });

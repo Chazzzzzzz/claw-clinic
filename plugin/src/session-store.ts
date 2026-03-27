@@ -12,7 +12,12 @@ export interface StoredSession {
   detectedProvider?: string;
   isNovelCode?: boolean;
   pendingFixes?: Array<{ label: string; command?: string; description: string }>;
-  pendingCommand?: string;  // Command awaiting user confirmation via /clinic run
+  pendingCommand?: string;
+  pendingToolId?: string;       // Tool call ID awaiting user approval
+  conversation?: Array<{        // Multi-turn conversation history for /consult
+    role: "user" | "assistant";
+    content: string | unknown[];
+  }>;
 }
 
 const SESSION_DIR = join(homedir(), ".openclaw", "claw-clinic");

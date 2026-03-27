@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { registerClinicChatCommand } from "../commands/chat-clinic.js";
+import { ClawClinicClient } from "../client.js";
 import type { PluginApi, CommandContext } from "../types.js";
 
 // ─── Mocks ───────────────────────────────────────────────────────
@@ -40,229 +41,209 @@ vi.mock("../verification-executor.js", () => ({
   executeVerificationPlan: vi.fn().mockResolvedValue({ passed: true, results: [] }),
 }));
 
+vi.mock("../notifier.js", () => ({
+  ClinicNotifier: vi.fn().mockImplementation(() => ({
+    status: vi.fn(),
+    progress: vi.fn(),
+    success: vi.fn(),
+    error: vi.fn(),
+    getBuffer: vi.fn().mockReturnValue([]),
+    flush: vi.fn().mockReturnValue(""),
+  })),
+}));
+
 // ─── Helpers ─────────────────────────────────────────────────────
 
-function createMockApi(): PluginApi {
+function createMockApi(config: Record<string, unknown> = {}): PluginApi {
   return {
     registerCommand: vi.fn(),
     registerCli: vi.fn(),
     registerTool: vi.fn(),
     on: vi.fn(),
     logger: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
-    config: {},
+    config,
   };
 }
 
-function createMockClient() {
-  return {
-    healthCheck: vi.fn(),
-    diagnose: vi.fn(),
-    treat: vi.fn(),
-    verify: vi.fn(),
-  };
+function getClinicHandler(api: PluginApi, client: ClawClinicClient) {
+  registerClinicChatCommand(api, client);
+  const call = (api.registerCommand as ReturnType<typeof vi.fn>).mock.calls[0];
+  return call[0].handler as (ctx: CommandContext) => Promise<{ text: string }>;
 }
 
-function getClinicHandler(api: PluginApi, client: ReturnType<typeof createMockClient>) {
-  registerClinicChatCommand(api, client as any);
-  const registerCall = (api.registerCommand as ReturnType<typeof vi.fn>).mock.calls[0];
-  return registerCall[0].handler as (ctx: CommandContext) => Promise<{ text: string }>;
-}
+beforeEach(() => {
+  vi.clearAllMocks();
+  mockFetch.mockResolvedValue({ ok: true, status: 200 });
+});
 
 // ─── Tests ───────────────────────────────────────────────────────
 
-describe("Inline check verification in fresh diagnosis flow", () => {
-  let api: PluginApi;
-  let client: ReturnType<typeof createMockClient>;
-  let handler: (ctx: CommandContext) => Promise<{ text: string }>;
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockFetch.mockReset();
-    api = createMockApi();
-    client = createMockClient();
-    handler = getClinicHandler(api, client);
-  });
-
-  it("returns resolved when all inline checks pass and no symptoms", async () => {
-    client.diagnose.mockResolvedValue({
-      sessionId: "sess-1",
-      diagnosis: {
-        icd_ai_code: "CFG.1.2",
-        name: "API Key Missing",
-        confidence: 0.95,
-        severity: "Critical",
-        reasoning: "No API key configured",
-      },
-      differential: [],
-      treatmentPlan: [],
-      checks: [
-        { type: "check_config", target: "apiKey", expect: "present", label: "API key present" },
-      ],
-      fixes: [
-        { label: "Set key", command: "openclaw config set apiKey sk-ant-...", description: "Set API key" },
-      ],
+describe("Agentic consultation flow — evidence and approval", () => {
+  it("collects evidence and sends to /consult on fresh diagnosis", async () => {
+    const consultMock = vi.spyOn(ClawClinicClient.prototype, "consult");
+    consultMock.mockResolvedValueOnce({
+      text: "Healthy agent.",
+      toolCalls: [],
+      done: true,
+      assistantContent: [{ type: "text", text: "Healthy agent." }],
     });
 
-    const { executeVerificationPlan } = await import("../verification-executor.js");
-    (executeVerificationPlan as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      passed: true,
-      results: [{ step: { type: "check_config", description: "API key present" }, passed: true }],
-    });
+    const api = createMockApi();
+    const client = new ClawClinicClient("http://localhost:3000");
+    const handler = getClinicHandler(api, client);
 
     const result = await handler({ args: "" });
 
-    expect(result.text).toMatch(/resolved|no action/i);
+    expect(consultMock).toHaveBeenCalledTimes(1);
+    const messages = consultMock.mock.calls[0][0];
+    expect(messages[0].role).toBe("user");
+    expect(messages[0].content).toContain("Evidence");
+    expect(result.text).toContain("Healthy");
+    consultMock.mockRestore();
   });
 
-  it("shows checks and fixes when inline checks fail", async () => {
-    client.diagnose.mockResolvedValue({
-      sessionId: "sess-2",
-      diagnosis: {
-        icd_ai_code: "CFG.1.2",
-        name: "API Key Missing",
-        confidence: 0.95,
-        severity: "Critical",
-        reasoning: "No API key configured",
-      },
-      differential: [],
-      treatmentPlan: [],
-      checks: [
-        { type: "check_config", target: "apiKey", expect: "present", label: "API key present" },
-      ],
-      fixes: [
-        { label: "Set key", command: "openclaw config set apiKey sk-ant-...", description: "Set API key" },
-      ],
+  it("includes user symptoms in evidence message", async () => {
+    const consultMock = vi.spyOn(ClawClinicClient.prototype, "consult");
+    consultMock.mockResolvedValueOnce({
+      text: "Investigating...",
+      toolCalls: [{ id: "t1", name: "run_command", input: { command: "echo test", reason: "test" } }],
+      done: false,
+      assistantContent: [{ type: "tool_use", id: "t1", name: "run_command", input: { command: "echo test", reason: "test" } }],
     });
 
-    const { executeVerificationPlan } = await import("../verification-executor.js");
-    (executeVerificationPlan as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      passed: false,
-      results: [{ step: { type: "check_config", description: "API key present" }, passed: false, error: "Key missing" }],
-    });
+    const api = createMockApi();
+    const client = new ClawClinicClient("http://localhost:3000");
+    const handler = getClinicHandler(api, client);
 
-    const result = await handler({ args: "" });
+    await handler({ args: "my agent loops forever" });
 
-    expect(result.text).toContain("**API Key Missing**");
-    expect(result.text).toContain("Checked:");
-    expect(result.text).toContain("\u2717 API key present");
-    expect(result.text).toContain("To fix");
+    const messages = consultMock.mock.calls[0][0];
+    expect(messages[0].content).toContain("my agent loops forever");
+    consultMock.mockRestore();
   });
 
-  it("shows checks even when symptoms are reported and checks pass", async () => {
-    client.diagnose.mockResolvedValue({
-      sessionId: "sess-3",
-      diagnosis: {
-        icd_ai_code: "CFG.3.1",
-        name: "Auth Failure",
-        confidence: 0.9,
-        severity: "High",
-        reasoning: "API key rejected",
-      },
-      differential: [],
-      treatmentPlan: [],
-      checks: [
-        { type: "check_connectivity", target: "anthropic", expect: "reachable", label: "Anthropic API reachable" },
-      ],
-      fixes: [
-        { label: "Regenerate key", command: "openclaw auth refresh", description: "Refresh credentials" },
-      ],
+  it("asks for user approval before running diagnostic commands", async () => {
+    const { saveSession } = await import("../session-store.js");
+    const consultMock = vi.spyOn(ClawClinicClient.prototype, "consult");
+    consultMock.mockResolvedValueOnce({
+      text: "",
+      toolCalls: [{ id: "t1", name: "run_command", input: { command: "cat ~/.openclaw/openclaw.json", reason: "Reading config" } }],
+      done: false,
+      assistantContent: [{ type: "tool_use", id: "t1", name: "run_command", input: { command: "cat ~/.openclaw/openclaw.json", reason: "Reading config" } }],
     });
 
-    const { executeVerificationPlan } = await import("../verification-executor.js");
-    (executeVerificationPlan as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      passed: true,
-      results: [{ step: { type: "check_connectivity", description: "Anthropic API reachable" }, passed: true }],
-    });
+    const api = createMockApi();
+    const client = new ClawClinicClient("http://localhost:3000");
+    const handler = getClinicHandler(api, client);
 
-    // With symptoms, should NOT shortcut to resolved
-    const result = await handler({ args: "my key is broken" });
+    const result = await handler({ args: "test" });
 
-    expect(result.text).toContain("**Auth Failure**");
-    expect(result.text).toContain("Checked:");
-    expect(result.text).toContain("\u2713 Anthropic API reachable");
+    // Shows the command and asks for approval
+    expect(result.text).toContain("cat ~/.openclaw/openclaw.json");
+    expect(result.text).toContain("/clinic yes");
+
+    // Saves session with tool ID for approval flow
+    expect(saveSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pendingToolId: "t1",
+        pendingCommand: "cat ~/.openclaw/openclaw.json",
+      }),
+    );
+
+    consultMock.mockRestore();
   });
 
-  it("returns healthy when backend finds no diagnosis", async () => {
-    client.diagnose.mockResolvedValue({
-      sessionId: "sess-4",
-      diagnosis: null,
-      differential: [],
-      treatmentPlan: [],
-      checks: [],
-      fixes: [],
-    });
-
-    const result = await handler({ args: "" });
-
-    expect(result.text).toContain("healthy");
-    expect(result.text).toContain("No issues detected");
-  });
-
-  it("shows diagnosis without checks when no checks returned", async () => {
-    client.diagnose.mockResolvedValue({
-      sessionId: "sess-5",
-      diagnosis: {
-        icd_ai_code: "E.1.1",
-        name: "Infinite Loop",
-        confidence: 0.8,
-        severity: "Critical",
-        reasoning: "Loop detected in agent execution.",
-      },
-      differential: [],
-      treatmentPlan: [],
-      checks: [],
-      fixes: [],
-    });
-
-    const result = await handler({ args: "" });
-
-    expect(result.text).toContain("**Infinite Loop**");
-    expect(result.text).toContain("Loop detected");
-  });
-
-  it("does not call backend verify or treat endpoints", async () => {
-    client.diagnose.mockResolvedValue({
-      sessionId: "sess-6",
-      diagnosis: {
-        icd_ai_code: "CFG.1.2",
-        name: "API Key Missing",
-        confidence: 0.95,
-        severity: "Critical",
-        reasoning: "No API key",
-      },
-      differential: [],
-      treatmentPlan: [],
-      checks: [
-        { type: "check_config", target: "apiKey", expect: "present", label: "API key present" },
-      ],
-      fixes: [
-        { label: "Set key", command: "openclaw config set apiKey KEY", description: "Set key" },
+  it("asks for approval before applying fixes", async () => {
+    const consultMock = vi.spyOn(ClawClinicClient.prototype, "consult");
+    consultMock.mockResolvedValueOnce({
+      text: "Found the issue.",
+      toolCalls: [{ id: "t2", name: "propose_fix", input: { command: "openclaw gateway restart", description: "Restart to load new config", risk: "low" } }],
+      done: false,
+      assistantContent: [
+        { type: "text", text: "Found the issue." },
+        { type: "tool_use", id: "t2", name: "propose_fix", input: { command: "openclaw gateway restart", description: "Restart to load new config", risk: "low" } },
       ],
     });
 
-    const { executeVerificationPlan } = await import("../verification-executor.js");
-    (executeVerificationPlan as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      passed: false,
-      results: [{ step: { type: "check_config", description: "API key present" }, passed: false }],
-    });
+    const api = createMockApi();
+    const client = new ClawClinicClient("http://localhost:3000");
+    const handler = getClinicHandler(api, client);
 
-    await handler({ args: "" });
+    const result = await handler({ args: "not responding" });
 
-    // Only diagnose is called — no verify or treat backend calls
-    expect(client.diagnose).toHaveBeenCalledTimes(1);
-    expect(client.verify).not.toHaveBeenCalled();
-    expect(client.treat).not.toHaveBeenCalled();
+    expect(result.text).toContain("Proposed fix");
+    expect(result.text).toContain("openclaw gateway restart");
+    expect(result.text).toContain("/clinic yes");
+    consultMock.mockRestore();
   });
 
   it("handles backend error gracefully", async () => {
-    client.diagnose.mockRejectedValue(new Error("ECONNREFUSED"));
+    const consultMock = vi.spyOn(ClawClinicClient.prototype, "consult");
+    consultMock.mockRejectedValueOnce(new Error("Connection refused"));
 
-    const result = await handler({ args: "" });
+    const api = createMockApi();
+    const client = new ClawClinicClient("http://localhost:3000");
+    const handler = getClinicHandler(api, client);
 
-    expect(result.text).toContain("Could not reach diagnostic backend");
+    const result = await handler({ args: "help" });
+
+    expect(result.text).toContain("error");
+    expect(result.text).toContain("Connection refused");
+    consultMock.mockRestore();
   });
 
-  it("falls back to local issues when backend is down", async () => {
+  it("clears session on mark_resolved", async () => {
+    const { clearSession } = await import("../session-store.js");
+    const consultMock = vi.spyOn(ClawClinicClient.prototype, "consult");
+    consultMock.mockResolvedValueOnce({
+      text: "",
+      toolCalls: [{ id: "t3", name: "mark_resolved", input: { icd_ai_code: "CFG.1.1", name: "Missing Key", summary: "Fixed it" } }],
+      done: false,
+      assistantContent: [{ type: "tool_use", id: "t3", name: "mark_resolved", input: { icd_ai_code: "CFG.1.1", name: "Missing Key", summary: "Fixed it" } }],
+    });
+
+    const api = createMockApi();
+    const client = new ClawClinicClient("http://localhost:3000");
+    const handler = getClinicHandler(api, client);
+
+    const result = await handler({ args: "test" });
+
+    expect(result.text).toContain("Resolved");
+    expect(clearSession).toHaveBeenCalled();
+    consultMock.mockRestore();
+  });
+
+  it("includes local validation issues in evidence", async () => {
+    const { validateLocally } = await import("../validation.js");
+    (validateLocally as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      openclawReachable: false,
+      quickIssues: ["Gateway not running"],
+      skipped: false,
+    });
+
+    const consultMock = vi.spyOn(ClawClinicClient.prototype, "consult");
+    consultMock.mockResolvedValueOnce({
+      text: "Gateway appears down.",
+      toolCalls: [],
+      done: true,
+      assistantContent: [{ type: "text", text: "Gateway appears down." }],
+    });
+
+    const api = createMockApi();
+    const client = new ClawClinicClient("http://localhost:3000");
+    const handler = getClinicHandler(api, client);
+
+    await handler({ args: "" });
+
+    const messages = consultMock.mock.calls[0][0];
+    expect(messages[0].content).toContain("Gateway not running");
+    consultMock.mockRestore();
+  });
+
+  it("falls back gracefully when /consult endpoint is down", async () => {
+    const consultMock = vi.spyOn(ClawClinicClient.prototype, "consult");
+    consultMock.mockRejectedValueOnce(new Error("503 — AI diagnostician unavailable"));
+
     const { validateLocally } = await import("../validation.js");
     (validateLocally as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       openclawReachable: true,
@@ -270,10 +251,14 @@ describe("Inline check verification in fresh diagnosis flow", () => {
       skipped: false,
     });
 
-    client.diagnose.mockRejectedValue(new Error("timeout"));
+    const api = createMockApi();
+    const client = new ClawClinicClient("http://localhost:3000");
+    const handler = getClinicHandler(api, client);
 
     const result = await handler({ args: "" });
 
-    expect(result.text).toContain("No API key configured");
+    // Should show error but not crash
+    expect(result.text).toContain("error");
+    consultMock.mockRestore();
   });
 });

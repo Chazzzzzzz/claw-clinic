@@ -1,6 +1,5 @@
-import type { PluginApi, DiagnosisResponse } from "../types.js";
-import type { StoredSession } from "../session-store.js";
-import { ClawClinicClient } from "../client.js";
+import type { PluginApi } from "../types.js";
+import { ClawClinicClient, type ConsultMessage, type ConsultToolCall } from "../client.js";
 import {
   collectAllEvidence,
   collectConnectivityEvidence,
@@ -15,115 +14,135 @@ import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
 import { validateLocally } from "../validation.js";
-import { ClinicNotifier } from "../notifier.js";
 import { loadSession, saveSession, clearSession } from "../session-store.js";
-import { executeVerificationPlan, type VerificationPlanResult } from "../verification-executor.js";
+import type { Evidence } from "../types.js";
+
+const MAX_TURNS = 15;
+
+/** Serialize evidence into readable text for the AI */
+function serializeEvidence(evidence: Evidence[]): string {
+  const parts: string[] = [];
+  for (const e of evidence) {
+    switch (e.type) {
+      case "config":
+        parts.push(`[Config] key=${e.apiKey?.masked || "none"} provider=${e.apiKey?.provider || "unknown"} endpoint=${e.endpoint?.url || "none"}${e.errorLogs?.length ? ` Errors: ${e.errorLogs.join("; ")}` : ""}`);
+        break;
+      case "connectivity":
+        for (const p of e.providers || []) {
+          parts.push(`[Conn] ${p.name}: reachable=${p.reachable} auth=${p.authStatus || "unknown"} latency=${p.latencyMs || "?"}ms${p.error ? ` err=${p.error}` : ""}`);
+        }
+        break;
+      case "runtime":
+        if (e.recentTraceStats) {
+          const s = e.recentTraceStats;
+          parts.push(`[Runtime] steps=${s.totalSteps} errors=${s.errorCount} tools=${s.toolCallCount}/${s.toolSuccessCount} loop=${s.loopDetected} cost=$${s.totalCostUsd} latency=${s.avgLatencyMs}ms`);
+        }
+        break;
+      case "behavior":
+        parts.push(`[Behavior] ${e.description}${e.symptoms?.length ? ` Symptoms: ${e.symptoms.join(", ")}` : ""}`);
+        break;
+      case "log":
+        if (e.errorPatterns?.length) parts.push(`[Logs] ${e.errorPatterns.join("; ")}`);
+        break;
+      case "environment":
+        parts.push(`[Env] OS=${e.os || "?"} Node=${e.nodeVersion || "?"} OpenClaw=${e.openclawVersion || "?"}`);
+        break;
+    }
+  }
+  return parts.join("\n");
+}
 
 /**
- * Register /clinic as a chat command via registerCommand.
- * This bypasses the LLM entirely — works even when AI model is down.
+ * Register /clinic as a chat command.
  *
- * Flow: diagnose → show checks/fixes → user picks fix → done (max 3 rounds)
+ * Flow: user describes problem → AI investigates step by step →
+ * plugin executes commands (with approval) → AI analyzes results →
+ * loop until resolved.
  */
 export function registerClinicChatCommand(api: PluginApi, client: ClawClinicClient): void {
   api.registerCommand({
     name: "clinic",
-    description: "Run a health check — diagnose and treat agent issues (no AI model needed)",
+    description: "Diagnose and fix agent issues — AI doctor examines your agent step by step",
     acceptsArgs: true,
     handler: async (ctx) => {
       const input = ctx.args?.trim() || undefined;
-      const channelId = ctx.channelId;
 
-      // --- If user provided input, check for a pending session first ---
-      if (input) {
-        const pending = await loadSession();
+      // Check for pending session
+      const pending = await loadSession();
+
+      // /clinic done — manual resolution
+      if (input && /^done$/i.test(input)) {
         if (pending) {
-          return await handleFollowUp(api, client, pending, input);
+          const conn = await collectConnectivityEvidence(api.config);
+          const failed = conn.providers.filter((p) => !p.reachable || p.authStatus === "failed");
+          if (failed.length === 0) {
+            await clearSession();
+            return { text: `**${pending.diagnosisName || "Issue"}** — Fixed.` };
+          }
+          return { text: `Still detected: ${failed.map((p) => `${p.name}: ${p.error || "failed"}`).join("; ")}` };
         }
-        // No pending session → treat input as symptoms for a fresh diagnosis
+        return { text: "No active session." };
       }
 
-      // --- Fresh diagnosis ---
-      return await runDiagnosis(api, client, input, channelId);
+      // /clinic yes — approve pending action
+      if (input && /^(yes|y|approve)$/i.test(input) && pending?.pendingCommand) {
+        return await executeApprovedCommand(api, client, pending);
+      }
+
+      // /clinic no — skip pending action
+      if (input && /^(no|n|skip)$/i.test(input) && pending?.pendingCommand) {
+        return await continueConsultation(api, client, pending, "User declined to run this command. Try a different approach.");
+      }
+
+      // /clinic reset — clear session
+      if (input && /^reset$/i.test(input)) {
+        await clearSession();
+        return { text: "Session cleared." };
+      }
+
+      // Resume pending session if user sends more context
+      if (pending?.conversation?.length && input) {
+        return await continueConsultation(api, client, pending, input);
+      }
+
+      // Fresh consultation
+      return await startConsultation(api, client, input);
     },
   });
 }
 
-// ─── Execute checks from diagnosis response ─────────────────────
+// ─── Sanitization ─────────────────────────────────────────────────
 
-async function executeChecks(
-  checks: DiagnosisResponse["checks"],
-  config: Record<string, unknown>,
-): Promise<VerificationPlanResult> {
-  if (!checks.length) return { passed: true, results: [] };
-
-  const steps = checks.map((check) => ({
-    type: check.type as "check_config" | "check_connectivity" | "check_file" | "check_process",
-    description: check.label,
-    target: check.target,
-    expect: check.expect,
-  }));
-
-  return executeVerificationPlan(steps, config);
+function sanitizeOutput(output: string): string {
+  // Mask API keys (common patterns)
+  let sanitized = output.replace(
+    /\b(sk-[a-zA-Z0-9_-]{20,}|sk-ant-[a-zA-Z0-9_-]{20,}|key-[a-zA-Z0-9]{20,}|AIza[a-zA-Z0-9_-]{30,})/g,
+    (match) => match.slice(0, 8) + "..." + match.slice(-4),
+  );
+  // Mask bearer tokens
+  sanitized = sanitized.replace(
+    /Bearer\s+[a-zA-Z0-9._-]{20,}/gi,
+    "Bearer [MASKED]",
+  );
+  // Mask common secret patterns
+  sanitized = sanitized.replace(
+    /"(api[_-]?key|secret|token|password|auth)":\s*"[^"]{8,}"/gi,
+    (match, key) => `"${key}": "[MASKED]"`,
+  );
+  return sanitized;
 }
 
-// ─── Compact formatting ─────────────────────────────────────────
+// ─── Start fresh consultation ─────────────────────────────────────
 
-function formatCompactResult(
-  d: { name: string; reasoning: string },
-  checkResults: VerificationPlanResult,
-  fixes: Array<{ label: string; command?: string; description: string }>,
-): string {
-  const lines: string[] = [];
-
-  // Header
-  lines.push(`**${d.name}**`);
-  lines.push(d.reasoning);
-
-  // Check results
-  if (checkResults.results.length > 0) {
-    lines.push("");
-    lines.push("Checked:");
-    for (const r of checkResults.results) {
-      const icon = r.passed ? "  \u2713" : "  \u2717";
-      const detail = r.detail || r.error || "";
-      lines.push(`${icon} ${r.step.description}${detail ? `  (${detail})` : ""}`);
-    }
-  }
-
-  // Fix options
-  if (fixes.length > 0) {
-    lines.push("");
-    lines.push("To fix \u2014 pick one:");
-    fixes.forEach((fix, i) => {
-      if (fix.command) {
-        lines.push(`  ${i + 1}. ${fix.label}: \`${fix.command}\``);
-      } else {
-        lines.push(`  ${i + 1}. ${fix.label}`);
-      }
-    });
-    lines.push("");
-    lines.push(`Reply ${fixes.length === 1 ? "`/clinic 1`" : "`/clinic 1`-`/clinic " + fixes.length + "`"} to apply`);
-  }
-
-  return lines.join("\n");
-}
-
-// ─── Fresh diagnosis flow ───────────────────────────────────────
-// Round 1: collect evidence → backend diagnose → show checks/fixes
-// No pre-verification round trip — checks are done inline
-
-async function runDiagnosis(
+async function startConsultation(
   api: PluginApi,
   client: ClawClinicClient,
   symptoms: string | undefined,
-  channelId: string | undefined,
 ): Promise<{ text: string }> {
-  // Clear any stale session
   await clearSession();
 
   try {
-    // Step 1: Collect evidence locally (no backend call)
+    // Collect evidence
     const localResult = await validateLocally(api.config);
     const evidence = await collectAllEvidence(api.config);
 
@@ -134,188 +153,236 @@ async function runDiagnosis(
       evidence.push({ type: "behavior", description: "Local validation issues", symptoms: localResult.quickIssues });
     }
 
-    // Step 2: Single backend call — diagnose with checks/fixes
-    let diagnosis;
-    try {
-      diagnosis = await client.diagnose(evidence, symptoms);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (localResult.quickIssues.length > 0) {
-        return { text: localResult.quickIssues.map((i) => `- ${i}`).join("\n") };
-      }
-      return { text: `Could not reach diagnostic backend: ${msg}` };
-    }
+    // Build initial message with evidence
+    const evidenceText = serializeEvidence(evidence);
+    const userMessage = symptoms
+      ? `Patient complaint: ${symptoms}\n\nEvidence collected from the agent:\n${evidenceText}`
+      : `Patient has no specific complaint. Routine checkup requested.\n\nEvidence:\n${evidenceText}`;
 
-    if (!diagnosis.diagnosis) {
-      return { text: "Your agent appears healthy. No issues detected." };
-    }
+    const messages: ConsultMessage[] = [{ role: "user", content: userMessage }];
 
-    // Step 3: Execute checks locally (no backend call)
-    const checkResults = await executeChecks(diagnosis.checks || [], api.config);
+    // Call the consultation endpoint
+    const response = await client.consult(messages);
 
-    // If all checks pass and no symptoms were reported, issue may be resolved
-    if (checkResults.passed && !symptoms && checkResults.results.length > 0) {
-      return { text: `Previously detected **${diagnosis.diagnosis.name}** has already been resolved. No action needed.` };
-    }
+    // Build conversation for session
+    const conversation: ConsultMessage[] = [
+      ...messages,
+      { role: "assistant", content: response.assistantContent },
+    ];
 
-    // Step 4: Format compact result with checks/fixes
-    const text = formatCompactResult(diagnosis.diagnosis, checkResults, diagnosis.fixes || []);
-
-    // Save session with all fixes for selection — user picks /clinic 1, /clinic 2, etc.
-    if (diagnosis.fixes?.length) {
-      await saveSession({
-        sessionId: diagnosis.sessionId,
-        pendingStepId: "fix_selection",
-        pendingPrompt: `Reply /clinic 1-${diagnosis.fixes.length}`,
-        diagnosisCode: diagnosis.diagnosis.icd_ai_code,
-        diagnosisName: diagnosis.diagnosis.name,
-        createdAt: new Date().toISOString(),
-        pendingFixes: diagnosis.fixes,
-      });
-    }
-
-    return { text };
+    return await handleConsultResponse(api, client, response, conversation);
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { text: `Clinic error: ${message}` };
+    const msg = err instanceof Error ? err.message : String(err);
+    return { text: `Clinic error: ${msg}` };
   }
 }
 
-// ─── Follow-up flow (resume pending session) ────────────────────
-// Round 2: user picks fix → show command
-// Round 3: /clinic done → re-verify locally (no backend call)
+// ─── Handle consultation response ─────────────────────────────────
 
-async function handleFollowUp(
+async function handleConsultResponse(
   api: PluginApi,
   client: ClawClinicClient,
-  session: StoredSession,
-  userInput: string,
+  response: { text: string; toolCalls: ConsultToolCall[]; done: boolean; assistantContent: unknown[] },
+  conversation: ConsultMessage[],
 ): Promise<{ text: string }> {
-  const trimmedInput = userInput.trim();
+  const lines: string[] = [];
 
-  // Numeric fix selection — user picks /clinic 1, /clinic 2, etc.
-  // This IS the user's confirmation — execute the command immediately.
-  if (session.pendingFixes?.length && /^[1-9]$/.test(trimmedInput)) {
-    const fixIndex = parseInt(trimmedInput, 10) - 1;
-    if (fixIndex >= session.pendingFixes.length) {
-      return { text: `Pick \`/clinic 1\`-\`/clinic ${session.pendingFixes.length}\`` };
-    }
-    const fix = session.pendingFixes[fixIndex];
-    return executeFix(api, client, session, fix);
+  // Show AI's text to user
+  if (response.text) {
+    lines.push(response.text);
   }
 
-  // Pasted API key detection (handles key fix inline — no extra backend call)
-  const inputProvider = detectProvider(trimmedInput);
+  // If done (no tool calls, AI finished), show summary and clear session
+  if (response.done) {
+    await clearSession();
+    return { text: lines.join("\n") || "Consultation complete." };
+  }
 
-  if (inputProvider) {
-    const validation = validateKeyFormat(trimmedInput);
-    if (!validation.valid) {
-      return { text: `That key doesn't look right: ${validation.issue}\n\nPlease paste the correct full key.` };
-    }
-
-    const writeResult = await writeApiKeyToAuthProfiles(trimmedInput, inputProvider);
-    if (!writeResult.success) {
-      return { text: `Could not save the key: ${writeResult.error}\n\nAs a fallback, run this in your terminal:\n  openclaw config set ${inputProvider}.apiKey ${maskApiKey(trimmedInput)}...\nThen reply: /clinic done` };
-    }
-
-    // Re-verify locally — no backend call
-    const conn = await collectConnectivityEvidence(api.config);
-    const providerResult = conn.providers.find((p) => p.name === inputProvider);
-    const passed = providerResult ? providerResult.reachable && providerResult.authStatus !== "failed" : true;
-
-    if (passed) {
+  // Handle tool calls
+  for (const tool of response.toolCalls) {
+    if (tool.name === "mark_resolved") {
       await clearSession();
-      return { text: `Your new ${inputProvider} API key is working. The issue is fixed.\n\nFor security, please delete the message containing your API key from this chat.` };
-    } else {
+      lines.push("");
+      lines.push(`**${tool.input.name}** (${tool.input.icd_ai_code}) — Resolved`);
+      lines.push(tool.input.summary);
+      return { text: lines.join("\n") };
+    }
+
+    if (tool.name === "run_command") {
+      // Diagnostic command — show what we're doing, ask approval
+      lines.push("");
+      lines.push(`> ${tool.input.reason}`);
+      lines.push(`> \`${tool.input.command}\``);
+
       await saveSession({
-        sessionId: session.sessionId,
-        pendingStepId: session.pendingStepId,
-        pendingPrompt: session.pendingPrompt,
-        diagnosisCode: session.diagnosisCode,
-        diagnosisName: session.diagnosisName,
+        sessionId: `consult-${Date.now()}`,
+        pendingStepId: "awaiting_approval",
+        pendingPrompt: tool.input.command,
+        pendingCommand: tool.input.command,
+        pendingToolId: tool.id,
+        diagnosisCode: "",
+        diagnosisName: tool.input.reason,
         createdAt: new Date().toISOString(),
-        detectedProvider: inputProvider,
+        conversation,
       });
-      return { text: `I saved your key but it's not working \u2014 ${providerResult?.authError || "auth failed"}\n\nPlease double-check that you copied the correct key. Paste the right key here to try again.` };
+
+      lines.push("");
+      lines.push("Reply `/clinic yes` to run, `/clinic no` to skip");
+      return { text: lines.join("\n") };
+    }
+
+    if (tool.name === "propose_fix") {
+      // Fix command — show with more emphasis, ask approval
+      lines.push("");
+      lines.push(`**Proposed fix** (risk: ${tool.input.risk || "low"}):`);
+      lines.push(`  \`${tool.input.command}\``);
+      lines.push(tool.input.description);
+
+      await saveSession({
+        sessionId: `consult-${Date.now()}`,
+        pendingStepId: "awaiting_approval",
+        pendingPrompt: tool.input.command,
+        pendingCommand: tool.input.command,
+        pendingToolId: tool.id,
+        diagnosisCode: "",
+        diagnosisName: tool.input.description,
+        createdAt: new Date().toISOString(),
+        conversation,
+      });
+
+      lines.push("");
+      lines.push("Reply `/clinic yes` to apply, `/clinic no` to skip");
+      return { text: lines.join("\n") };
     }
   }
 
-  // /clinic done — re-verify locally, no backend call (round 3)
-  if (/^done$/i.test(trimmedInput)) {
-    // Run checks locally using the diagnosis checks from session
-    const conn = await collectConnectivityEvidence(api.config);
-    const failed = conn.providers.filter((p) => !p.reachable || p.authStatus === "failed");
-    if (failed.length === 0) {
-      await clearSession();
-      return { text: `**${session.diagnosisName}** \u2014 Fixed.` };
-    }
-    return { text: `**${session.diagnosisName}** \u2014 still detected.\n\n${failed.map((p) => `${p.name}: ${p.error || "failed"}`).join("; ")}` };
-  }
-
-  // Unknown input
-  if (session.pendingFixes?.length) {
-    return { text: `Reply \`/clinic 1\`-\`/clinic ${session.pendingFixes.length}\` to pick a fix, or \`/clinic done\` if you fixed it manually.` };
-  }
-  return { text: "Reply /clinic done when you've fixed the issue." };
+  // Shouldn't reach here, but handle gracefully
+  return { text: lines.join("\n") || "Waiting for input..." };
 }
 
-// ─── Execute a selected fix (round 2 — no backend call) ─────────
+// ─── Execute an approved command and continue ─────────────────────
 
-async function executeFix(
+async function executeApprovedCommand(
   api: PluginApi,
-  _client: ClawClinicClient,
-  session: StoredSession,
-  fix: { label: string; command?: string; description: string },
+  client: ClawClinicClient,
+  session: { pendingCommand?: string; pendingToolId?: string; conversation?: ConsultMessage[] },
 ): Promise<{ text: string }> {
-  if (fix.command) {
-    // User selected this fix — execute immediately
-    try {
-      await execAsync(fix.command, { timeout: 15_000 });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      await saveSession({
-        sessionId: session.sessionId,
-        pendingStepId: "awaiting_fix",
-        pendingPrompt: fix.command,
-        diagnosisCode: session.diagnosisCode,
-        diagnosisName: session.diagnosisName,
-        createdAt: new Date().toISOString(),
-      });
-      return {
-        text: `Ran \`${fix.command}\` — failed: ${msg}\n\nRun it manually, then reply \`/clinic done\``,
-      };
-    }
-
-    // Verify after execution
-    const conn = await collectConnectivityEvidence(api.config);
-    const failed = conn.providers.filter((p) => !p.reachable || p.authStatus === "failed");
-    if (failed.length === 0) {
-      await clearSession();
-      return { text: `Ran \`${fix.command}\`\n\n**${session.diagnosisName}** — Fixed.` };
-    }
-
-    // Command ran but issue persists
-    await saveSession({
-      sessionId: session.sessionId,
-      pendingStepId: "awaiting_fix",
-      pendingPrompt: fix.command,
-      diagnosisCode: session.diagnosisCode,
-      diagnosisName: session.diagnosisName,
-      createdAt: new Date().toISOString(),
-    });
-    return {
-      text: `Ran \`${fix.command}\` but issue persists.\n\n${failed.map((p) => `${p.name}: ${p.error || "failed"}`).join("; ")}\n\nTry another fix or reply \`/clinic done\` after manual resolution.`,
-    };
+  if (!session.pendingCommand || !session.pendingToolId || !session.conversation) {
+    return { text: "No pending command to execute." };
   }
 
-  // No command — manual fix, save session for /clinic done
-  await saveSession({
-    sessionId: session.sessionId,
-    pendingStepId: "awaiting_fix",
-    pendingPrompt: fix.description,
-    diagnosisCode: session.diagnosisCode,
-    diagnosisName: session.diagnosisName,
-    createdAt: new Date().toISOString(),
+  const command = session.pendingCommand;
+  const toolId = session.pendingToolId;
+
+  // Execute the command
+  let output: string;
+  let isError = false;
+  try {
+    const result = await execAsync(command, { timeout: 15_000 });
+    output = (result.stdout || "") + (result.stderr ? `\n(stderr: ${result.stderr})` : "");
+    if (!output.trim()) output = "(command completed with no output)";
+  } catch (err) {
+    isError = true;
+    const errObj = err as Record<string, unknown>;
+    if (errObj && typeof errObj === "object" && "stderr" in errObj && errObj.stderr) {
+      output = `Error: ${String(errObj.stderr)}`;
+    } else {
+      output = `Error: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+
+  // Sanitize the output
+  output = sanitizeOutput(output);
+
+  // Truncate if too long
+  if (output.length > 3000) {
+    output = output.slice(0, 3000) + "\n...(truncated)";
+  }
+
+  // Show user what happened
+  const statusLine = isError
+    ? `Ran \`${command}\` — error`
+    : `Ran \`${command}\` — ok`;
+
+  // Continue the consultation with the result
+  const conversation = [...session.conversation];
+  conversation.push({
+    role: "user",
+    content: [{
+      type: "tool_result",
+      tool_use_id: toolId,
+      content: output,
+      is_error: isError,
+    }],
   });
-  return { text: `${fix.description}\n\nReply \`/clinic done\` when complete.` };
+
+  return await continueLoop(api, client, conversation, statusLine);
+}
+
+// ─── Continue consultation with user input ────────────────────────
+
+async function continueConsultation(
+  api: PluginApi,
+  client: ClawClinicClient,
+  session: { conversation?: ConsultMessage[]; pendingToolId?: string },
+  userInput: string,
+): Promise<{ text: string }> {
+  if (!session.conversation) {
+    return { text: "No active consultation. Run `/clinic <describe your problem>` to start." };
+  }
+
+  const conversation = [...session.conversation];
+
+  // If there's a pending tool call that was skipped, send a tool_result
+  if (session.pendingToolId) {
+    conversation.push({
+      role: "user",
+      content: [{
+        type: "tool_result",
+        tool_use_id: session.pendingToolId,
+        content: userInput,
+        is_error: false,
+      }],
+    });
+  } else {
+    conversation.push({ role: "user", content: userInput });
+  }
+
+  return await continueLoop(api, client, conversation, null);
+}
+
+// ─── Core loop: call backend and handle response ──────────────────
+
+async function continueLoop(
+  api: PluginApi,
+  client: ClawClinicClient,
+  conversation: ConsultMessage[],
+  statusLine: string | null,
+): Promise<{ text: string }> {
+  // Guard against runaway loops
+  const turnCount = conversation.filter((m) => m.role === "assistant").length;
+  if (turnCount >= MAX_TURNS) {
+    await clearSession();
+    return { text: `${statusLine ? statusLine + "\n\n" : ""}Consultation reached maximum turns. Run \`/clinic\` to start a new session.` };
+  }
+
+  try {
+    const response = await client.consult(conversation);
+
+    const updatedConversation: ConsultMessage[] = [
+      ...conversation,
+      { role: "assistant", content: response.assistantContent },
+    ];
+
+    const result = await handleConsultResponse(api, client, response, updatedConversation);
+
+    // Prepend status line if we have one
+    if (statusLine) {
+      return { text: `${statusLine}\n\n${result.text}` };
+    }
+    return result;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { text: `${statusLine ? statusLine + "\n\n" : ""}Consultation error: ${msg}` };
+  }
 }
