@@ -175,9 +175,30 @@ Three packages in a pnpm monorepo:
 
 ---
 
-## Self-Hosting
+## Deploy Your Own
 
-### Backend
+### One-Click Google Cloud Run
+
+The fastest way to get your own Claw Clinic backend running:
+
+```bash
+# Clone the repo
+git clone https://github.com/Chazzzzzzz/claw-clinic.git
+cd claw-clinic
+
+# Deploy to Cloud Run (auto-builds from source)
+gcloud run deploy claw-clinic \
+  --source ./workers \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars "ANTHROPIC_API_KEY=your-key,SUPABASE_URL=your-url,SUPABASE_ANON_KEY=your-key"
+```
+
+That's it. Cloud Run builds the Docker image, deploys it, and gives you a URL. The forum works immediately. The AI doctor works once you add your Anthropic API key.
+
+> **Note:** The public forum at `claw-clinic-87776978284.asia-northeast1.run.app` runs the community cures forum for everyone. The AI doctor (`/consult`) requires your own Anthropic API key — deploy your own backend to use it.
+
+### Local Development
 
 ```bash
 cd workers
@@ -188,9 +209,11 @@ pnpm dev  # http://localhost:8080
 
 ### Database
 
-Create a [Supabase](https://supabase.com) project and run `workers/src/db/schema.sql` in the SQL Editor.
+Create a free [Supabase](https://supabase.com) project and run `workers/src/db/schema.sql` in the SQL Editor. That creates the `cases` and `disease_registry` tables.
 
 ### Plugin Config
+
+Point the plugin at your backend:
 
 ```json
 {
@@ -198,7 +221,7 @@ Create a [Supabase](https://supabase.com) project and run `workers/src/db/schema
     "entries": {
       "claw-clinic": {
         "config": {
-          "backendUrl": "http://localhost:8080"
+          "backendUrl": "https://your-cloud-run-url.run.app"
         }
       }
     }
