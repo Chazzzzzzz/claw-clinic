@@ -122,14 +122,21 @@ describe("Agentic consultation flow — evidence and approval", () => {
     consultMock.mockRestore();
   });
 
-  it("asks for user approval before running diagnostic commands", async () => {
-    const { saveSession } = await import("../session-store.js");
+  it("auto-executes diagnostic commands without asking for approval", async () => {
     const consultMock = vi.spyOn(ClawClinicClient.prototype, "consult");
+    // Turn 1: AI asks to run a diagnostic command
     consultMock.mockResolvedValueOnce({
-      text: "",
-      toolCalls: [{ id: "t1", name: "run_command", input: { command: "cat ~/.openclaw/openclaw.json", reason: "Reading config" } }],
+      text: "Reading config...",
+      toolCalls: [{ id: "t1", name: "run_command", input: { command: "echo hello", reason: "Reading config" } }],
       done: false,
-      assistantContent: [{ type: "tool_use", id: "t1", name: "run_command", input: { command: "cat ~/.openclaw/openclaw.json", reason: "Reading config" } }],
+      assistantContent: [{ type: "tool_use", id: "t1", name: "run_command", input: { command: "echo hello", reason: "Reading config" } }],
+    });
+    // Turn 2: AI resolves after seeing result
+    consultMock.mockResolvedValueOnce({
+      text: "Config looks fine.",
+      toolCalls: [],
+      done: true,
+      assistantContent: [{ type: "text", text: "Config looks fine." }],
     });
 
     const api = createMockApi();
@@ -138,17 +145,12 @@ describe("Agentic consultation flow — evidence and approval", () => {
 
     const result = await handler({ args: "test" });
 
-    // Shows the command and asks for approval
-    expect(result.text).toContain("cat ~/.openclaw/openclaw.json");
-    expect(result.text).toContain("/clinic yes");
-
-    // Saves session with tool ID for approval flow
-    expect(saveSession).toHaveBeenCalledWith(
-      expect.objectContaining({
-        pendingToolId: "t1",
-        pendingCommand: "cat ~/.openclaw/openclaw.json",
-      }),
-    );
+    // Should NOT ask for approval on run_command
+    expect(result.text).not.toContain("/clinic yes");
+    // Should show the command was run
+    expect(result.text).toContain("Reading config");
+    // consult called twice — auto-executed and continued
+    expect(consultMock).toHaveBeenCalledTimes(2);
 
     consultMock.mockRestore();
   });

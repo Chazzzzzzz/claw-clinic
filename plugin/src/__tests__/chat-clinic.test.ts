@@ -87,16 +87,24 @@ beforeEach(() => {
 });
 
 describe("/clinic agentic consultation flow", () => {
-  it("starts consultation and shows AI text when AI responds with text only", async () => {
+  it("auto-executes run_command and continues the loop", async () => {
     const consultMock = vi.spyOn(ClawClinicClient.prototype, "consult");
+    // Turn 1: AI asks to run a diagnostic command
     consultMock.mockResolvedValueOnce({
       text: "Let me check your config.",
-      toolCalls: [{ id: "tool-1", name: "run_command", input: { command: "cat ~/.openclaw/openclaw.json", reason: "Checking your config" } }],
+      toolCalls: [{ id: "tool-1", name: "run_command", input: { command: "echo test", reason: "Checking your config" } }],
       done: false,
       assistantContent: [
         { type: "text", text: "Let me check your config." },
-        { type: "tool_use", id: "tool-1", name: "run_command", input: { command: "cat ~/.openclaw/openclaw.json", reason: "Checking your config" } },
+        { type: "tool_use", id: "tool-1", name: "run_command", input: { command: "echo test", reason: "Checking your config" } },
       ],
+    });
+    // Turn 2: AI sees result and resolves
+    consultMock.mockResolvedValueOnce({
+      text: "Everything looks fine.",
+      toolCalls: [],
+      done: true,
+      assistantContent: [{ type: "text", text: "Everything looks fine." }],
     });
 
     const api = createMockApi();
@@ -105,9 +113,11 @@ describe("/clinic agentic consultation flow", () => {
 
     const result = await handler({ args: "agent not working" });
 
+    // run_command should auto-execute (no /clinic yes prompt)
+    expect(result.text).not.toContain("/clinic yes");
     expect(result.text).toContain("Checking your config");
-    expect(result.text).toContain("cat ~/.openclaw/openclaw.json");
-    expect(result.text).toContain("/clinic yes");
+    // Should have called consult twice (initial + after command result)
+    expect(consultMock).toHaveBeenCalledTimes(2);
     consultMock.mockRestore();
   });
 
@@ -158,14 +168,14 @@ describe("/clinic agentic consultation flow", () => {
     consultMock.mockRestore();
   });
 
-  it("saves session with conversation history for multi-turn", async () => {
+  it("saves session for propose_fix approval", async () => {
     const { saveSession } = await import("../session-store.js");
     const consultMock = vi.spyOn(ClawClinicClient.prototype, "consult");
     consultMock.mockResolvedValueOnce({
-      text: "Checking...",
-      toolCalls: [{ id: "tool-1", name: "run_command", input: { command: "ls", reason: "test" } }],
+      text: "Found the issue.",
+      toolCalls: [{ id: "tool-1", name: "propose_fix", input: { command: "openclaw gateway restart", description: "Restart to apply changes", risk: "low" } }],
       done: false,
-      assistantContent: [{ type: "text", text: "Checking..." }, { type: "tool_use", id: "tool-1", name: "run_command", input: { command: "ls", reason: "test" } }],
+      assistantContent: [{ type: "text", text: "Found the issue." }, { type: "tool_use", id: "tool-1", name: "propose_fix", input: { command: "openclaw gateway restart", description: "Restart", risk: "low" } }],
     });
 
     const api = createMockApi();
@@ -174,15 +184,12 @@ describe("/clinic agentic consultation flow", () => {
 
     await handler({ args: "test" });
 
+    // propose_fix should save session and pause for approval
     expect(saveSession).toHaveBeenCalledWith(
       expect.objectContaining({
         pendingStepId: "awaiting_approval",
-        pendingCommand: "ls",
+        pendingCommand: "openclaw gateway restart",
         pendingToolId: "tool-1",
-        conversation: expect.arrayContaining([
-          expect.objectContaining({ role: "user" }),
-          expect.objectContaining({ role: "assistant" }),
-        ]),
       }),
     );
     consultMock.mockRestore();

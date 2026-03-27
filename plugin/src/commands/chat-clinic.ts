@@ -209,26 +209,36 @@ async function handleConsultResponse(
     }
 
     if (tool.name === "run_command") {
-      // Diagnostic command — show what we're doing, ask approval
-      lines.push("");
-      lines.push(`> ${tool.input.reason}`);
-      lines.push(`> \`${tool.input.command}\``);
+      // Diagnostic command — auto-execute, show status, send result back to AI
+      lines.push(`> ${tool.input.reason}: \`${tool.input.command}\``);
 
-      await saveSession({
-        sessionId: `consult-${Date.now()}`,
-        pendingStepId: "awaiting_approval",
-        pendingPrompt: tool.input.command,
-        pendingCommand: tool.input.command,
-        pendingToolId: tool.id,
-        diagnosisCode: "",
-        diagnosisName: tool.input.reason,
-        createdAt: new Date().toISOString(),
-        conversation,
+      let output: string;
+      let isError = false;
+      try {
+        const result = await execAsync(tool.input.command, { timeout: 15_000 });
+        output = (result.stdout || "") + (result.stderr ? `\n(stderr: ${result.stderr})` : "");
+        if (!output.trim()) output = "(no output)";
+      } catch (err) {
+        isError = true;
+        const errObj = err as Record<string, unknown>;
+        if (errObj && typeof errObj === "object" && "stderr" in errObj && errObj.stderr) {
+          output = `Error: ${String(errObj.stderr)}`;
+        } else {
+          output = `Error: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      }
+
+      output = sanitizeOutput(output);
+      if (output.length > 3000) output = output.slice(0, 3000) + "\n...(truncated)";
+
+      // Send result back to AI and continue the loop
+      conversation.push({
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: tool.id, content: output, is_error: isError }],
       });
 
-      lines.push("");
-      lines.push("Reply `/clinic yes` to run, `/clinic no` to skip");
-      return { text: lines.join("\n") };
+      // Continue — call /consult again with the result
+      return await continueLoop(api, client, conversation, lines.join("\n"));
     }
 
     if (tool.name === "propose_fix") {
