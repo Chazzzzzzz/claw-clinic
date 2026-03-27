@@ -228,7 +228,7 @@ function renderCase(c) {
   }).join('');
 
   const allCmds = (c.treatment_steps || []).filter(s => s.command).map(s => s.command);
-  const copyAll = allCmds.length > 0 ? '<div class="copy-all-wrap"><button class="copy-all" data-cmd="' + esc(allCmds.join('\n')) + '" onclick="copyCmdFromData(this)">Copy all commands</button></div>' : '';
+  const copyAll = allCmds.length > 0 ? '<div class="copy-all-wrap"><button class="copy-all" data-cmd="' + esc(allCmds.join('\\n')) + '" onclick="copyCmdFromData(this)">Copy all commands</button></div>' : '';
 
   const outcomeCls = c.outcome === 'cured' ? 'outcome-cured' : 'outcome-partial';
 
@@ -414,7 +414,7 @@ async function doSubmit(body, form) {
 // ── Utils ──
 
 function copyCmdFromData(btn) {
-  const cmd = btn.getAttribute('data-cmd') || '';
+  var cmd = (btn.getAttribute('data-cmd') || '').replace(/\\\\n/g, '\\n');
   navigator.clipboard.writeText(cmd).then(function() {
     var orig = btn.textContent;
     btn.textContent = 'Copied!';
